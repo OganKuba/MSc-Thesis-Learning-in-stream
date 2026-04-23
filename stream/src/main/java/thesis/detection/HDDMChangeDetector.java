@@ -1,9 +1,11 @@
 package thesis.detection;
 
+import lombok.Getter;
 import moa.classifiers.core.driftdetection.AbstractChangeDetector;
 import moa.classifiers.core.driftdetection.HDDM_A_Test;
 import moa.classifiers.core.driftdetection.HDDM_W_Test;
 
+@Getter
 public class HDDMChangeDetector implements DriftDetector {
 
     public enum Variant { A, W }
@@ -87,11 +89,6 @@ public class HDDMChangeDetector implements DriftDetector {
     public void reset() {
         this.detector = build();
     }
-
-    public Variant getVariant() { return variant; }
-    public double getAlphaD()   { return alphaD; }
-    public double getAlphaW()   { return alphaW; }
-    public double getLambda()   { return lambda; }
 
     @Override
     public String name() {

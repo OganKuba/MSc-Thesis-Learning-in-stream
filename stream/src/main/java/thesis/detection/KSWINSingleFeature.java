@@ -1,11 +1,13 @@
 package thesis.detection;
 
+import lombok.Getter;
 import org.apache.commons.math3.stat.inference.KolmogorovSmirnovTest;
 
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Deque;
 
+@Getter
 public class KSWINSingleFeature {
 
     private final int windowSize;
@@ -68,8 +70,6 @@ public class KSWINSingleFeature {
     public double getKSStatistic() { return lastKsStatistic; }
     public boolean isDrift()       { return lastDrift; }
     public boolean isReady()       { return reference != null && current.size() == windowSize; }
-    public int getWindowSize()     { return windowSize; }
-    public double getAlpha()       { return alpha; }
 
     public void setReferenceWindow(double[] ref) {
         if (ref == null || ref.length != windowSize) {

@@ -1,10 +1,13 @@
 package thesis.detection;
 
+import lombok.Getter;
+
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
+@Getter
 public class PerFeatureKSWIN {
 
     private final int numFeatures;
@@ -108,9 +111,4 @@ public class PerFeatureKSWIN {
         detectors[idx].reset();
         lastPValues[idx] = 1.0;
     }
-
-    public int getNumFeatures() { return numFeatures; }
-    public double getAlpha()    { return alpha; }
-    public double getFdrQ()     { return fdrQ; }
-    public int getWindowSize()  { return windowSize; }
 }
