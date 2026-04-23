@@ -1,8 +1,11 @@
 package thesis.detection;
 
+import lombok.Getter;
+
 import java.util.Collections;
 import java.util.Set;
 
+@Getter
 public class TwoLevelDriftDetector {
 
     public enum Level1Type { ADWIN, HDDM_A, HDDM_W }
@@ -108,7 +111,6 @@ public class TwoLevelDriftDetector {
     }
 
     public long getUpdateCount()  { return updates; }
-    public long getGlobalAlarms() { return globalAlarms; }
 
     public Config getConfig()     { return cfg; }
     public String level1Name()    { return level1.name(); }
