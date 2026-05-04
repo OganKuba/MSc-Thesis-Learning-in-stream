@@ -9,8 +9,9 @@
   "max_instances": 100000,
   "detector_delta": 0.002,
   "skip_missing_arff": true,
+  "real_datasets_read_all": true,
 
-  "seeds": [1, 2, 3, 4, 5],
+  "seeds": [1],
 
   "variants": [
     { "name": "ARF+S1",         "model": "ARF", "selector": "S1" },

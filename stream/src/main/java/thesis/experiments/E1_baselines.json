@@ -7,9 +7,10 @@
   "ram_sample_every": 200,
   "max_instances": 100000,
   "skip_missing_arff": true,
+  "real_datasets_read_all": true,
 
   "models": ["HT", "ARF", "SRP"],
-  "seeds": [1, 2, 3, 4, 5],
+  "seeds": [1],
 
   "datasets": [
     { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 100000, "noise_features": 5 },

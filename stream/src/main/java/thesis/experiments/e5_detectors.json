@@ -13,6 +13,9 @@
   "method_periodic_interval": 500,
   "method_w_post_drift": 300,
 
+  "drift_before_window": 500,
+  "drift_after_window": 500,
+
   "adwin_delta": 0.002,
   "hddm_drift_confidence": 0.001,
   "hddm_warning_confidence": 0.005,
@@ -21,7 +24,7 @@
   "kswin_alpha": 0.005,
   "kswin_test_every": 50,
 
-  "seeds": [1, 2, 3, 4, 5],
+  "seeds": [1],
 
   "magnitudes": ["LOW", "MEDIUM", "HIGH"],
 

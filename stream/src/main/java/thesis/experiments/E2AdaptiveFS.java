@@ -32,10 +32,12 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -53,6 +55,7 @@ public class E2AdaptiveFS {
         public double sigma = 0.01;
         public double speed = 0.001;
         public int driftFeatures = 5;
+        public long maxInstances = -1;
     }
 
     public static final class Variant {
@@ -74,6 +77,7 @@ public class E2AdaptiveFS {
         public long maxInstances = Long.MAX_VALUE;
         public double detectorDelta = 0.002;
         public boolean skipMissingArff = true;
+        public boolean realDatasetsReadAll = true;
         public List<DatasetSpec> datasets = new ArrayList<>();
         public List<Variant> variants = new ArrayList<>();
         public List<Integer> seeds = new ArrayList<>();
@@ -91,6 +95,7 @@ public class E2AdaptiveFS {
             c.maxInstances    = r.path("max_instances").asLong(c.maxInstances);
             c.detectorDelta   = r.path("detector_delta").asDouble(c.detectorDelta);
             c.skipMissingArff = r.path("skip_missing_arff").asBoolean(c.skipMissingArff);
+            c.realDatasetsReadAll = r.path("real_datasets_read_all").asBoolean(c.realDatasetsReadAll);
             r.path("seeds").forEach(n -> c.seeds.add(n.asInt()));
             for (JsonNode d : r.path("datasets")) {
                 DatasetSpec ds = new DatasetSpec();
@@ -103,6 +108,7 @@ public class E2AdaptiveFS {
                 ds.sigma          = d.path("sigma").asDouble(ds.sigma);
                 ds.speed          = d.path("speed").asDouble(ds.speed);
                 ds.driftFeatures  = d.path("drift_features").asInt(ds.driftFeatures);
+                ds.maxInstances   = d.path("max_instances").asLong(ds.maxInstances);
                 c.datasets.add(ds);
             }
             for (JsonNode v : r.path("variants")) {
@@ -123,28 +129,76 @@ public class E2AdaptiveFS {
     }
 
     public static final class RunSummary {
-        public String dataset, variant, model, selector, detector;
+        public String dataset, variant, model, selector, detector, status;
         public int periodicInterval, seed, k, d;
         public long instances, driftCount, periodicTriggers, reSelections, selectionChangeCount;
         public double accuracy, kappa, kappaPer, accMajority, accNoChange;
-        public double avgFeatureStability, ramHours;
+        public double avgFeatureStability, lastFeatureStability, ramHours, throughput, peakMB;
     }
 
     public static void main(String[] args) throws Exception {
-        String configPath = args.length > 0 ? args[0]
-                : "stream/configs/E2_adaptive_fs.json";
-        Cfg cfg = Cfg.load(Paths.get(configPath));
+        Path configPath = args.length > 0 ? Paths.get(args[0]) : findDefaultConfig();
+        if (!Files.exists(configPath)) {
+            throw new RuntimeException(
+                    "Config not found: " + configPath.toAbsolutePath() +
+                            "\nWorking dir: " + Paths.get(".").toAbsolutePath());
+        }
+        Cfg cfg = Cfg.load(configPath);
         new E2AdaptiveFS().run(cfg);
+    }
+
+    private static Path findDefaultConfig() {
+        List<Path> candidates = List.of(
+                Paths.get("src/main/java/thesis/experiments/E2_adaptive_fs.json"),
+                Paths.get("experiments/E2_adaptive_fs.json"),
+                Paths.get("src/main/resources/E2_adaptive_fs.json")
+        );
+        for (Path p : candidates) {
+            if (Files.exists(p)) return p;
+        }
+        return candidates.get(0);
+    }
+
+    static long effectiveMaxInstances(Cfg cfg, DatasetSpec ds) {
+        if (ds.maxInstances > 0) return ds.maxInstances;
+        if ("arff".equalsIgnoreCase(ds.type) && cfg.realDatasetsReadAll) return Long.MAX_VALUE;
+        return cfg.maxInstances;
     }
 
     public void run(Cfg cfg) throws Exception {
         Files.createDirectories(Paths.get(cfg.outputDir));
         Path csvPath = Paths.get(cfg.outputDir, "E2_results.csv");
         Path summaryPath = Paths.get(cfg.outputDir, "E2_summary.csv");
+        Path driftsPath = Paths.get(cfg.outputDir, cfg.experimentGroup + "_drifts.csv");
+        Path selectionsPath = Paths.get(cfg.outputDir, cfg.experimentGroup + "_selections.csv");
+
+        int validDatasets = 0;
+        for (DatasetSpec ds : cfg.datasets) {
+            if ("arff".equalsIgnoreCase(ds.type)
+                    && (ds.path == null || !Files.exists(Paths.get(ds.path)))) {
+                if (cfg.skipMissingArff) continue;
+            }
+            validDatasets++;
+        }
+        int runTotal = validDatasets * cfg.seeds.size() * cfg.variants.size();
+        int runIdx = 0;
+
         List<RunSummary> all = new ArrayList<>();
 
-        try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath.toFile()))) {
+        try (PrintWriter csv = new PrintWriter(new FileWriter(csvPath.toFile()));
+             PrintWriter drifts = new PrintWriter(new FileWriter(driftsPath.toFile()));
+             PrintWriter selections = new PrintWriter(new FileWriter(selectionsPath.toFile()))) {
+
             csv.println(windowHeader());
+
+            drifts.println("dataset,variant,seed,alarm_at,kappa_before_500,"
+                    + "kappa_after_500,recovery_instances,drift_type");
+            drifts.flush();
+
+            selections.println("dataset,variant,seed,changed_at,"
+                    + "old_selection,new_selection,added_features,removed_features,trigger");
+            selections.flush();
+
             for (DatasetSpec ds : cfg.datasets) {
                 if ("arff".equalsIgnoreCase(ds.type)
                         && (ds.path == null || !Files.exists(Paths.get(ds.path)))) {
@@ -154,13 +208,22 @@ public class E2AdaptiveFS {
                 }
                 for (int seed : cfg.seeds) {
                     for (Variant v : cfg.variants) {
+                        runIdx++;
                         try {
-                            RunSummary rs = runOne(cfg, ds, v, seed, csv);
+                            RunSummary rs = runOne(cfg, ds, v, seed,
+                                    csv, drifts, selections, runIdx, runTotal);
+                            rs.status = "OK";
                             all.add(rs);
                         } catch (Exception e) {
-                            System.err.printf("[E2][FAIL] %s|%s|seed=%d -> %s%n",
-                                    ds.name, v.name, seed, e);
+                            System.err.printf("[E2][FAIL] (%d/%d) %s|%s|seed=%d -> %s%n",
+                                    runIdx, runTotal, ds.name, v.name, seed, e);
                             e.printStackTrace(System.err);
+                            RunSummary rs = new RunSummary();
+                            rs.dataset = ds.name; rs.variant = v.name; rs.model = v.model;
+                            rs.selector = v.selector; rs.detector = v.detector;
+                            rs.periodicInterval = v.periodicInterval; rs.seed = seed;
+                            rs.status = "FAIL";
+                            all.add(rs);
                         }
                     }
                 }
@@ -170,18 +233,30 @@ public class E2AdaptiveFS {
         writeSummary(all, summaryPath);
         writeValidation(all, Paths.get(cfg.outputDir, "validation_level1.txt"));
         System.out.println("[E2] Done -> " + cfg.outputDir);
+        System.out.println("[E2] Results    -> " + csvPath);
+        System.out.println("[E2] Summary    -> " + summaryPath);
+        System.out.println("[E2] Drifts     -> " + driftsPath);
+        System.out.println("[E2] Selections -> " + selectionsPath);
     }
 
     static String windowHeader() {
         return "instance_num,dataset,variant,model,selector,detector,periodic_interval,seed,"
                 + "selected_features,selected_count,selection_changed,trigger_type,drift_alarm,"
-                + "drift_count,feature_stability_ratio,model_num_attributes,"
+                + "drift_count,feature_stability,model_num_attributes,"
                 + "accuracy_window,kappa_window,kappa_per_window,"
-                + "majority_baseline_window,nochange_baseline_window,recovery_time,ram_hours";
+                + "majority_baseline_window,nochange_baseline_window,recovery_time,ram_hours,"
+                + "throughput_inst_per_sec,peak_ram_mb";
     }
 
     public RunSummary runOne(Cfg cfg, DatasetSpec ds, Variant v, int seed,
-                             PrintWriter csv) throws Exception {
+                             PrintWriter csv, PrintWriter driftsCsv, PrintWriter selectionsCsv,
+                             int runIdx, int runTotal) throws Exception {
+
+        long effMax = effectiveMaxInstances(cfg, ds);
+        String capStr = (effMax == Long.MAX_VALUE) ? "ALL" : Long.toString(effMax);
+        System.out.printf(Locale.ROOT, "[E2] (%d/%d) %s | %s | seed=%d | cap=%s ...%n",
+                runIdx, runTotal, ds.name, v.name, seed, capStr);
+
         InstanceStream stream = buildStream(ds, seed);
         if (stream instanceof OptionHandler) ((OptionHandler) stream).prepareForUse();
         InstancesHeader header = stream.getHeader();
@@ -227,13 +302,19 @@ public class E2AdaptiveFS {
         MetricsCollector mM = new MetricsCollector(C, cfg.windowSize, cfg.logEvery, cfg.ramSampleEvery);
         MetricsCollector mN = new MetricsCollector(C, cfg.windowSize, cfg.logEvery, cfg.ramSampleEvery);
 
+        DriftLogger dl = new DriftLogger(driftsCsv, ds.name, v.name, seed, 500, 500);
+
         int[] lastSel = selector.getCurrentSelection().clone();
         long n = collected;
         long driftCount = 0;
         long selectionChangeCount = 0;
         boolean selectionChangedSinceLastLog = false;
 
-        while (stream.hasMoreInstances() && n < cfg.maxInstances) {
+        long lastLogTime = System.nanoTime();
+        long lastLogN = n;
+        double lastThr = 0.0;
+
+        while (stream.hasMoreInstances() && n < effMax) {
             Instance raw = stream.nextInstance().getData();
             int y = (int) raw.classValue();
             double[] x = space.extractFeatures(raw);
@@ -254,7 +335,14 @@ public class E2AdaptiveFS {
             mc.update(y, yhat, elapsed);
             mM.update(y, yMaj, 0);
             mN.update(y, yNC, 0);
-            if (alarm) { mc.onDriftAlarm(); driftCount++; }
+
+            dl.tick(n, mc.snapshot().kappa);
+
+            if (alarm) {
+                mc.onDriftAlarm();
+                driftCount++;
+                dl.onAlarm(n, mc, drifting != null && !drifting.isEmpty());
+            }
 
             selector.update(x, y, alarm, drifting);
             model.train(raw, y, alarm, drifting);
@@ -265,6 +353,10 @@ public class E2AdaptiveFS {
             mc.onSelectionChanged(sel);
             boolean selChanged = !Arrays.equals(sel, lastSel);
             if (selChanged) {
+                String trig = triggerCode.get() == 1 ? "ALARM"
+                        : triggerCode.get() == 2 ? "PERIODIC"
+                        : "PERIODIC";
+                writeSelectionChange(selectionsCsv, ds.name, v.name, seed, n, lastSel, sel, trig);
                 selectionChangedSinceLastLog = true;
                 selectionChangeCount++;
                 lastSel = sel.clone();
@@ -273,10 +365,18 @@ public class E2AdaptiveFS {
             n++;
             if (cfg.logEvery > 0 && n % cfg.logEvery == 0) {
                 MetricsCollector.Snapshot s = mc.snapshot();
+                long now = System.nanoTime();
+                double dtSec = (now - lastLogTime) / 1e9;
+                double thr = dtSec > 0.0 ? (double) (n - lastLogN) / dtSec : 0.0;
+                lastLogTime = now;
+                lastLogN = n;
+                lastThr = thr;
                 String trig = triggerCode.get() == 1 ? "ALARM"
                         : triggerCode.get() == 2 ? "PERIODIC" : "NONE";
+                double stab = Double.isNaN(s.lastFeatureStabilityRatio)
+                        ? 1.0 : s.lastFeatureStabilityRatio;
                 csv.printf(Locale.ROOT,
-                        "%d,%s,%s,%s,%s,%s,%d,%d,\"%s\",%d,%s,%s,%s,%d,%.4f,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.6f%n",
+                        "%d,%s,%s,%s,%s,%s,%d,%d,\"%s\",%d,%s,%s,%s,%d,%.4f,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%.6f,%.2f,%.1f%n",
                         n, ds.name, v.name, v.model, v.selector, v.detector,
                         v.periodicInterval, seed,
                         joinSel(sel),
@@ -285,17 +385,28 @@ public class E2AdaptiveFS {
                         trig,
                         alarm ? "true" : "false",
                         driftCount,
-                        Double.isNaN(s.featureStabilityRatio) ? 1.0 : s.featureStabilityRatio,
+                        stab,
                         model.getCurrentSelection().length + 1,
                         s.accuracyWindow, s.kappa, s.kappaPer,
                         mM.snapshot().accuracyWindow,
                         mN.snapshot().accuracyWindow,
                         s.lastRecoveryTime,
-                        s.ramHoursGB);
+                        s.ramHoursGB,
+                        thr, s.peakMB);
                 csv.flush();
                 selectionChangedSinceLastLog = false;
+
+                if (effMax == Long.MAX_VALUE && n % (cfg.logEvery * 10L) == 0) {
+                    System.out.printf(Locale.ROOT,
+                            "[E2] (%d/%d) %s | %s | seed=%d | n=%d acc=%.4f k=%.4f drift=%d selChg=%d thr=%.0f/s peak=%.0fMB%n",
+                            runIdx, runTotal, ds.name, v.name, seed, n,
+                            s.accuracyWindow, s.kappa, driftCount, selectionChangeCount,
+                            thr, s.peakMB);
+                }
             }
         }
+
+        dl.flushPending(n, mc.snapshot().kappa);
 
         MetricsCollector.Snapshot s = mc.snapshot();
         RunSummary rs = new RunSummary();
@@ -313,15 +424,59 @@ public class E2AdaptiveFS {
         rs.accMajority = mM.snapshot().accuracyWindow;
         rs.accNoChange = mN.snapshot().accuracyWindow;
         rs.avgFeatureStability = Double.isNaN(s.featureStabilityRatio) ? 1.0 : s.featureStabilityRatio;
+        rs.lastFeatureStability = Double.isNaN(s.lastFeatureStabilityRatio) ? 1.0 : s.lastFeatureStabilityRatio;
         rs.ramHours = s.ramHoursGB;
+        rs.peakMB = s.peakMB;
+        double elapsedSec = s.elapsedHours * 3600.0;
+        rs.throughput = elapsedSec > 0.0 ? (double) n / elapsedSec : lastThr;
 
         System.out.printf(Locale.ROOT,
-                "[E2] %-14s %-22s seed=%d  d=%d K=%d  acc=%.4f k=%.4f kPer=%.4f  drift=%d periodic=%d reSel=%d selChg=%d  maj=%.4f nc=%.4f%n",
-                ds.name, v.name, seed, d, K,
+                "[E2] (%d/%d) DONE %-14s %-22s seed=%d  d=%d K=%d  n=%d  acc=%.4f k=%.4f kPer=%.4f  drift=%d periodic=%d reSel=%d selChg=%d  maj=%.4f nc=%.4f peak=%.0fMB thr=%.0f/s%n",
+                runIdx, runTotal, ds.name, v.name, seed, d, K, n,
                 rs.accuracy, rs.kappa, rs.kappaPer,
                 rs.driftCount, rs.periodicTriggers, rs.reSelections, rs.selectionChangeCount,
-                rs.accMajority, rs.accNoChange);
+                rs.accMajority, rs.accNoChange, rs.peakMB, rs.throughput);
         return rs;
+    }
+
+    static void writeSelectionChange(PrintWriter out, String dataset, String variant, int seed,
+                                     long changedAt, int[] oldSel, int[] newSel, String trigger) {
+        Set<Integer> oldSet = new HashSet<>();
+        for (int i : oldSel) oldSet.add(i);
+        Set<Integer> newSet = new HashSet<>();
+        for (int i : newSel) newSet.add(i);
+        Set<Integer> added = new TreeSet<>(newSet);
+        added.removeAll(oldSet);
+        Set<Integer> removed = new TreeSet<>(oldSet);
+        removed.removeAll(newSet);
+        out.printf(Locale.ROOT, "%s,%s,%d,%d,\"%s\",\"%s\",\"%s\",\"%s\",%s%n",
+                dataset, variant, seed, changedAt,
+                bracketJoin(oldSel),
+                bracketJoin(newSel),
+                bracketJoinSet(added),
+                bracketJoinSet(removed),
+                trigger);
+        out.flush();
+    }
+
+    static String bracketJoin(int[] a) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < a.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append(a[i]);
+        }
+        return sb.append(']').toString();
+    }
+
+    static String bracketJoinSet(Set<Integer> s) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (int v : s) {
+            if (!first) sb.append(',');
+            sb.append(v);
+            first = false;
+        }
+        return sb.append(']').toString();
     }
 
     static void attachListeners(FeatureSelector selector,
@@ -461,14 +616,26 @@ public class E2AdaptiveFS {
             w.println("dataset,variant,model,selector,detector,periodic_interval,seed,"
                     + "instances,d,k,accuracy,kappa,kappa_per,"
                     + "drift_count,periodic_triggers,re_selections,selection_change_count,"
-                    + "avg_feature_stability,acc_majority,acc_nochange,ram_hours");
+                    + "avg_feature_stability,last_feature_stability,"
+                    + "acc_majority,acc_nochange,ram_hours,"
+                    + "throughput_inst_per_sec,peak_ram_mb,status");
             for (RunSummary s : all) {
+                if ("FAIL".equals(s.status)) {
+                    w.printf(Locale.ROOT,
+                            "%s,%s,%s,%s,%s,%d,%d,0,0,0,NaN,NaN,NaN,0,0,0,0,NaN,NaN,NaN,NaN,NaN,0.00,0.0,FAIL%n",
+                            s.dataset, s.variant, s.model, s.selector, s.detector,
+                            s.periodicInterval, s.seed);
+                    continue;
+                }
                 w.printf(Locale.ROOT,
-                        "%s,%s,%s,%s,%s,%d,%d,%d,%d,%d,%.4f,%.4f,%.4f,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.6f%n",
-                        s.dataset, s.variant, s.model, s.selector, s.detector, s.periodicInterval, s.seed,
+                        "%s,%s,%s,%s,%s,%d,%d,%d,%d,%d,%.4f,%.4f,%.4f,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.6f,%.2f,%.1f,OK%n",
+                        s.dataset, s.variant, s.model, s.selector, s.detector,
+                        s.periodicInterval, s.seed,
                         s.instances, s.d, s.k, s.accuracy, s.kappa, s.kappaPer,
                         s.driftCount, s.periodicTriggers, s.reSelections, s.selectionChangeCount,
-                        s.avgFeatureStability, s.accMajority, s.accNoChange, s.ramHours);
+                        s.avgFeatureStability, s.lastFeatureStability,
+                        s.accMajority, s.accNoChange, s.ramHours,
+                        s.throughput, s.peakMB);
             }
         }
     }
@@ -476,6 +643,7 @@ public class E2AdaptiveFS {
     static void writeValidation(List<RunSummary> all, Path path) throws Exception {
         Map<String, Map<String, List<Double>>> agg = new HashMap<>();
         for (RunSummary s : all) {
+            if ("FAIL".equals(s.status)) continue;
             agg.computeIfAbsent(s.dataset, k -> new HashMap<>())
                     .computeIfAbsent(s.variant, k -> new ArrayList<>())
                     .add(s.kappa);

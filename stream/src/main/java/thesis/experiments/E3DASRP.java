@@ -12,7 +12,6 @@ import thesis.evaluation.MetricsCollector;
 import thesis.evaluation.StatisticalTests;
 import thesis.experiments.E2AdaptiveFS.DatasetSpec;
 import thesis.models.ARFWrapper;
-import thesis.models.DriftActionSummary;
 import thesis.models.DriftAwareSRP;
 import thesis.models.FeatureImportance;
 import thesis.models.FeatureSpace;
@@ -32,7 +31,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -67,6 +65,7 @@ public class E3DASRP {
         public long maxInstances = Long.MAX_VALUE;
         public double detectorDelta = 0.002;
         public boolean skipMissingArff = true;
+        public boolean realDatasetsReadAll = true;
         public List<DatasetSpec> datasets = new ArrayList<>();
         public List<Variant> variants = new ArrayList<>();
         public List<Integer> seeds = new ArrayList<>();
@@ -85,6 +84,7 @@ public class E3DASRP {
             c.maxInstances    = r.path("max_instances").asLong(c.maxInstances);
             c.detectorDelta   = r.path("detector_delta").asDouble(c.detectorDelta);
             c.skipMissingArff = r.path("skip_missing_arff").asBoolean(c.skipMissingArff);
+            c.realDatasetsReadAll = r.path("real_datasets_read_all").asBoolean(c.realDatasetsReadAll);
             r.path("seeds").forEach(n -> c.seeds.add(n.asInt()));
             for (JsonNode d : r.path("datasets")) {
                 DatasetSpec ds = new DatasetSpec();
@@ -97,6 +97,7 @@ public class E3DASRP {
                 ds.sigma          = d.path("sigma").asDouble(ds.sigma);
                 ds.speed          = d.path("speed").asDouble(ds.speed);
                 ds.driftFeatures  = d.path("drift_features").asInt(ds.driftFeatures);
+                ds.maxInstances   = d.path("max_instances").asLong(ds.maxInstances);
                 c.datasets.add(ds);
             }
             for (JsonNode v : r.path("variants")) c.variants.add(parseVariant(v));
@@ -148,10 +149,11 @@ public class E3DASRP {
     }
 
     public static final class RunResult {
-        public String dataset, variant;
+        public String dataset, variant, status;
         public int seed, d;
         public long instances;
-        public double accuracy, kappa, kappaPer, recoveryTime, featureStability, ramHours;
+        public double accuracy, kappa, kappaPer, recoveryTime, featureStability, lastFeatureStability;
+        public double ramHours, throughput, peakMB;
         public long driftCount;
         public long totalKept, totalSurgical, totalFull, totalNoReplacement, refreshCalls;
         public long weightedPredictions, unweightedFallbacks;
@@ -160,19 +162,69 @@ public class E3DASRP {
     }
 
     public static void main(String[] args) throws Exception {
-        String configPath = args.length > 0 ? args[0] : "stream/configs/e3_da_srp.json";
-        Cfg cfg = Cfg.load(Paths.get(configPath));
+        Path configPath = args.length > 0 ? Paths.get(args[0]) : findDefaultConfig();
+        if (!Files.exists(configPath)) {
+            throw new RuntimeException(
+                    "Config not found: " + configPath.toAbsolutePath() +
+                            "\nWorking dir: " + Paths.get(".").toAbsolutePath());
+        }
+        Cfg cfg = Cfg.load(configPath);
         new E3DASRP().run(cfg);
+    }
+
+    private static Path findDefaultConfig() {
+        List<Path> candidates = List.of(
+                Paths.get("src/main/java/thesis/experiments/e3_da_srp.json"),
+                Paths.get("experiments/e3_da_srp.json"),
+                Paths.get("src/main/resources/e3_da_srp.json")
+        );
+        for (Path p : candidates) {
+            if (Files.exists(p)) return p;
+        }
+        return candidates.get(0);
+    }
+
+    static long effectiveMaxInstances(Cfg cfg, DatasetSpec ds) {
+        if (ds.maxInstances > 0) return ds.maxInstances;
+        if ("arff".equalsIgnoreCase(ds.type) && cfg.realDatasetsReadAll) return Long.MAX_VALUE;
+        return cfg.maxInstances;
     }
 
     public void run(Cfg cfg) throws Exception {
         Files.createDirectories(Paths.get(cfg.outputDir));
         Path winCsv = Paths.get(cfg.outputDir, "E3_window.csv");
         Path summaryCsv = Paths.get(cfg.outputDir, "E3_summary.csv");
+        Path driftsCsv = Paths.get(cfg.outputDir, cfg.experimentGroup + "_drifts.csv");
+        Path actionsCsv = Paths.get(cfg.outputDir, "E3_dasrp_actions.csv");
+
+        int validDatasets = 0;
+        for (DatasetSpec ds : cfg.datasets) {
+            if ("arff".equalsIgnoreCase(ds.type)
+                    && (ds.path == null || !Files.exists(Paths.get(ds.path)))) {
+                if (cfg.skipMissingArff) continue;
+            }
+            validDatasets++;
+        }
+        int runTotal = validDatasets * cfg.seeds.size() * cfg.variants.size();
+        int runIdx = 0;
+
         List<RunResult> all = new ArrayList<>();
 
-        try (PrintWriter csv = new PrintWriter(new FileWriter(winCsv.toFile()))) {
+        try (PrintWriter csv = new PrintWriter(new FileWriter(winCsv.toFile()));
+             PrintWriter drifts = new PrintWriter(new FileWriter(driftsCsv.toFile()));
+             PrintWriter actions = new PrintWriter(new FileWriter(actionsCsv.toFile()))) {
+
             csv.println(windowHeader());
+
+            drifts.println("dataset,variant,seed,alarm_at,kappa_before_500,"
+                    + "kappa_after_500,recovery_instances,drift_type");
+            drifts.flush();
+
+            actions.println("dataset,variant,seed,alarm_at,"
+                    + "kept,surgical,full,no_replacement,"
+                    + "weighted_preds_total,fallbacks_total,drifting_features_detected");
+            actions.flush();
+
             for (DatasetSpec ds : cfg.datasets) {
                 if ("arff".equalsIgnoreCase(ds.type)
                         && (ds.path == null || !Files.exists(Paths.get(ds.path)))) {
@@ -182,12 +234,20 @@ public class E3DASRP {
                 }
                 for (int seed : cfg.seeds) {
                     for (Variant v : cfg.variants) {
+                        runIdx++;
                         try {
-                            all.add(runOne(cfg, ds, v, seed, csv));
+                            RunResult r = runOne(cfg, ds, v, seed,
+                                    csv, drifts, actions, runIdx, runTotal);
+                            r.status = "OK";
+                            all.add(r);
                         } catch (Exception e) {
-                            System.err.printf("[E3][FAIL] %s|%s|seed=%d -> %s%n",
-                                    ds.name, v.name, seed, e);
+                            System.err.printf("[E3][FAIL] (%d/%d) %s|%s|seed=%d -> %s%n",
+                                    runIdx, runTotal, ds.name, v.name, seed, e);
                             e.printStackTrace(System.err);
+                            RunResult r = new RunResult();
+                            r.dataset = ds.name; r.variant = v.name; r.seed = seed;
+                            r.status = "FAIL";
+                            all.add(r);
                         }
                     }
                 }
@@ -197,6 +257,10 @@ public class E3DASRP {
         writeSummary(all, summaryCsv);
         runStatistics(cfg, all);
         System.out.println("[E3] Done -> " + cfg.outputDir);
+        System.out.println("[E3] Window  -> " + winCsv);
+        System.out.println("[E3] Summary -> " + summaryCsv);
+        System.out.println("[E3] Drifts  -> " + driftsCsv);
+        System.out.println("[E3] Actions -> " + actionsCsv);
     }
 
     public static String windowHeader() {
@@ -204,10 +268,18 @@ public class E3DASRP {
                 + "overlap_per_learner,num_surgical_updates,num_full_replacements,num_kept,num_no_replacement,"
                 + "importance_top5,learner_weights,accuracy_window,kappa_window,kappa_per_window,"
                 + "majority_baseline_window,nochange_baseline_window,recovery_time,drift_count,"
-                + "feature_stability_ratio,ram_hours";
+                + "feature_stability,ram_hours,throughput_inst_per_sec,peak_ram_mb";
     }
 
-    public RunResult runOne(Cfg cfg, DatasetSpec ds, Variant v, int seed, PrintWriter csv) throws Exception {
+    public RunResult runOne(Cfg cfg, DatasetSpec ds, Variant v, int seed,
+                            PrintWriter csv, PrintWriter driftsCsv, PrintWriter actionsCsv,
+                            int runIdx, int runTotal) throws Exception {
+
+        long effMax = effectiveMaxInstances(cfg, ds);
+        String capStr = (effMax == Long.MAX_VALUE) ? "ALL" : Long.toString(effMax);
+        System.out.printf(Locale.ROOT, "[E3] (%d/%d) %s | %s | seed=%d | cap=%s ...%n",
+                runIdx, runTotal, ds.name, v.name, seed, capStr);
+
         InstanceStream stream = E2AdaptiveFS.buildStream(ds, seed);
         if (stream instanceof OptionHandler) ((OptionHandler) stream).prepareForUse();
         InstancesHeader header = stream.getHeader();
@@ -247,13 +319,19 @@ public class E3DASRP {
         MetricsCollector mM = new MetricsCollector(C, cfg.windowSize, cfg.logEvery, cfg.ramSampleEvery);
         MetricsCollector mN = new MetricsCollector(C, cfg.windowSize, cfg.logEvery, cfg.ramSampleEvery);
 
+        DriftLogger dl = new DriftLogger(driftsCsv, ds.name, v.name, seed, 500, 500);
+
         long n = collected;
         long driftCount = 0;
         long lastSurgical = 0, lastFull = 0;
         Set<Integer> lastDrifting = Set.of();
         int[] lastSel = mainModel.getCurrentSelection().clone();
 
-        while (stream.hasMoreInstances() && n < cfg.maxInstances) {
+        long lastLogTime = System.nanoTime();
+        long lastLogN = n;
+        double lastThr = 0.0;
+
+        while (stream.hasMoreInstances() && n < effMax) {
             Instance raw = stream.nextInstance().getData();
             int y = (int) raw.classValue();
             double[] x = space.extractFeatures(raw);
@@ -279,10 +357,28 @@ public class E3DASRP {
             mc.update(y, yhat, elapsed);
             mM.update(y, yMaj, 0);
             mN.update(y, yNC, 0);
+
+            dl.tick(n, mc.snapshot().kappa);
+
             if (alarm) {
                 mc.onDriftAlarm();
                 driftCount++;
                 lastDrifting = drifting;
+                dl.onAlarm(n, mc, drifting != null && !drifting.isEmpty());
+                if (da != null) {
+                    actionsCsv.printf(Locale.ROOT, "%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d%n",
+                            ds.name, v.name, seed, n,
+                            da.getTotalKept(), da.getTotalSurgical(),
+                            da.getTotalFull(), da.getTotalNoReplacement(),
+                            da.getWeightedPredictions(), da.getUnweightedFallbacks(),
+                            drifting == null ? 0 : drifting.size());
+                    actionsCsv.flush();
+                } else {
+                    actionsCsv.printf(Locale.ROOT, "%s,%s,%d,%d,0,0,0,0,0,0,%d%n",
+                            ds.name, v.name, seed, n,
+                            drifting == null ? 0 : drifting.size());
+                    actionsCsv.flush();
+                }
             }
 
             mainModel.train(raw, y, alarm, drifting);
@@ -314,6 +410,13 @@ public class E3DASRP {
                 long fullDelta = fullNow - lastFull;
                 lastSurgical = surgNow; lastFull = fullNow;
 
+                long now = System.nanoTime();
+                double dtSec = (now - lastLogTime) / 1e9;
+                double thr = dtSec > 0.0 ? (double) (n - lastLogN) / dtSec : 0.0;
+                lastLogTime = now;
+                lastLogN = n;
+                lastThr = thr;
+
                 String overlapStr = "";
                 if (da != null && da.getLastSummary() != null) {
                     overlapStr = joinIntArr(da.getLastSummary().getOverlapCounts());
@@ -325,8 +428,11 @@ public class E3DASRP {
                 String lwStr = "";
                 if (da != null) lwStr = joinDoubleArr(da.getLastLearnerWeights());
 
+                double stab = Double.isNaN(s.lastFeatureStabilityRatio)
+                        ? 1.0 : s.lastFeatureStabilityRatio;
+
                 csv.printf(Locale.ROOT,
-                        "%d,%s,%s,%d,%d,\"%s\",\"%s\",\"%s\",%d,%d,%d,%d,\"%s\",\"%s\",%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%.4f,%.6f%n",
+                        "%d,%s,%s,%d,%d,\"%s\",\"%s\",\"%s\",%d,%d,%d,%d,\"%s\",\"%s\",%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%.4f,%.6f,%.2f,%.1f%n",
                         n, ds.name, v.name, seed,
                         sel.length, joinIntArr(sel),
                         joinSet(lastDrifting),
@@ -338,11 +444,24 @@ public class E3DASRP {
                         s.accuracyWindow, s.kappa, s.kappaPer,
                         mM.snapshot().accuracyWindow, mN.snapshot().accuracyWindow,
                         s.lastRecoveryTime, driftCount,
-                        Double.isNaN(s.featureStabilityRatio) ? 1.0 : s.featureStabilityRatio,
-                        s.ramHoursGB);
+                        stab,
+                        s.ramHoursGB,
+                        thr, s.peakMB);
                 csv.flush();
+
+                if (effMax == Long.MAX_VALUE && n % (cfg.logEvery * 10L) == 0) {
+                    System.out.printf(Locale.ROOT,
+                            "[E3] (%d/%d) %s | %s | seed=%d | n=%d acc=%.4f k=%.4f drift=%d surg=%d full=%d thr=%.0f/s peak=%.0fMB%n",
+                            runIdx, runTotal, ds.name, v.name, seed, n,
+                            s.accuracyWindow, s.kappa, driftCount,
+                            da == null ? 0L : da.getTotalSurgical(),
+                            da == null ? 0L : da.getTotalFull(),
+                            thr, s.peakMB);
+                }
             }
         }
+
+        dl.flushPending(n, mc.snapshot().kappa);
 
         MetricsCollector.Snapshot s = mc.snapshot();
         RunResult r = new RunResult();
@@ -351,7 +470,11 @@ public class E3DASRP {
         r.accuracy = s.accuracyWindow; r.kappa = s.kappa; r.kappaPer = s.kappaPer;
         r.recoveryTime = s.avgRecoveryTime;
         r.featureStability = Double.isNaN(s.featureStabilityRatio) ? 1.0 : s.featureStabilityRatio;
+        r.lastFeatureStability = Double.isNaN(s.lastFeatureStabilityRatio) ? 1.0 : s.lastFeatureStabilityRatio;
         r.ramHours = s.ramHoursGB;
+        r.peakMB = s.peakMB;
+        double elapsedSec = s.elapsedHours * 3600.0;
+        r.throughput = elapsedSec > 0.0 ? (double) n / elapsedSec : lastThr;
         r.driftCount = driftCount;
         if (da != null) {
             r.totalKept = da.getTotalKept();
@@ -367,11 +490,11 @@ public class E3DASRP {
         }
 
         System.out.printf(Locale.ROOT,
-                "[E3] %-14s %-22s seed=%d  acc=%.4f k=%.4f kPer=%.4f  drift=%d kept=%d surg=%d full=%d noR=%d wPred=%d%n",
-                ds.name, v.name, seed,
+                "[E3] (%d/%d) DONE %-14s %-22s seed=%d  n=%d  acc=%.4f k=%.4f kPer=%.4f  drift=%d kept=%d surg=%d full=%d noR=%d wPred=%d peak=%.0fMB thr=%.0f/s%n",
+                runIdx, runTotal, ds.name, v.name, seed, n,
                 r.accuracy, r.kappa, r.kappaPer,
                 r.driftCount, r.totalKept, r.totalSurgical, r.totalFull, r.totalNoReplacement,
-                r.weightedPredictions);
+                r.weightedPredictions, r.peakMB, r.throughput);
         return r;
     }
 
@@ -532,18 +655,26 @@ public class E3DASRP {
     public static void writeSummary(List<RunResult> all, Path path) throws Exception {
         try (PrintWriter w = new PrintWriter(new FileWriter(path.toFile()))) {
             w.println("dataset,variant,seed,instances,accuracy,kappa,kappa_per,recovery_time,"
-                    + "drift_count,feature_stability,total_kept,total_surgical,total_full,"
-                    + "total_no_replacement,refresh_calls,weighted_predictions,unweighted_fallbacks,ram_hours");
+                    + "drift_count,avg_feature_stability,last_feature_stability,"
+                    + "total_kept,total_surgical,total_full,total_no_replacement,"
+                    + "refresh_calls,weighted_predictions,unweighted_fallbacks,"
+                    + "ram_hours,throughput_inst_per_sec,peak_ram_mb,status");
             for (RunResult r : all) {
+                if ("FAIL".equals(r.status)) {
+                    w.printf(Locale.ROOT,
+                            "%s,%s,%d,0,NaN,NaN,NaN,NaN,0,NaN,NaN,0,0,0,0,0,0,0,NaN,0.00,0.0,FAIL%n",
+                            r.dataset, r.variant, r.seed);
+                    continue;
+                }
                 w.printf(Locale.ROOT,
-                        "%s,%s,%d,%d,%.6f,%.6f,%.6f,%.6f,%d,%.6f,%d,%d,%d,%d,%d,%d,%d,%.6f%n",
+                        "%s,%s,%d,%d,%.6f,%.6f,%.6f,%.6f,%d,%.6f,%.6f,%d,%d,%d,%d,%d,%d,%d,%.6f,%.2f,%.1f,OK%n",
                         r.dataset, r.variant, r.seed, r.instances,
                         r.accuracy, r.kappa, r.kappaPer,
                         Double.isNaN(r.recoveryTime) ? -1.0 : r.recoveryTime,
-                        r.driftCount, r.featureStability,
+                        r.driftCount, r.featureStability, r.lastFeatureStability,
                         r.totalKept, r.totalSurgical, r.totalFull, r.totalNoReplacement,
                         r.refreshCalls, r.weightedPredictions, r.unweightedFallbacks,
-                        r.ramHours);
+                        r.ramHours, r.throughput, r.peakMB);
             }
         }
     }
@@ -551,6 +682,7 @@ public class E3DASRP {
     public static void runStatistics(Cfg cfg, List<RunResult> all) throws Exception {
         Map<String, Map<String, List<Double>>> byDsByVar = new LinkedHashMap<>();
         for (RunResult r : all) {
+            if ("FAIL".equals(r.status)) continue;
             byDsByVar.computeIfAbsent(r.dataset, k -> new LinkedHashMap<>())
                     .computeIfAbsent(r.variant, k -> new ArrayList<>())
                     .add(r.kappa);

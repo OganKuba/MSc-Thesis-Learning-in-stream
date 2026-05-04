@@ -147,12 +147,15 @@ public class E4DriftAnalysis {
     }
 
     public static final class RunResult {
-        public String generator, method, magnitude;
+        public String generator, method, magnitude, status;
         public int seed, d;
         public long instances;
-        public double accuracy, kappa, kappaPer, recoveryTime, featureStability, ramHours;
+        public double accuracy, kappa, kappaPer, recoveryTime;
+        public double featureStability, lastFeatureStability;
+        public double ramHours, throughput, peakMB;
         public long driftCount, selectionChangeCount;
-        public long totalKept, totalSurgical, totalFull, weightedPredictions, unweightedFallbacks;
+        public long totalKept, totalSurgical, totalFull, totalNoReplacement;
+        public long weightedPredictions, unweightedFallbacks;
         public int[] gtPositions = new int[0];
         public Set<Integer> gtFeatures = new TreeSet<>();
         public List<AlarmEvent> alarms = new ArrayList<>();
@@ -162,10 +165,26 @@ public class E4DriftAnalysis {
     }
 
     public static void main(String[] args) throws Exception {
-        String configPath = args.length > 0 ? args[0]
-                : "stream/configs/e4_synthetic_drift.json";
-        Cfg cfg = Cfg.load(Paths.get(configPath));
+        Path configPath = args.length > 0 ? Paths.get(args[0]) : findDefaultConfig();
+        if (!Files.exists(configPath)) {
+            throw new RuntimeException(
+                    "Config not found: " + configPath.toAbsolutePath() +
+                            "\nWorking dir: " + Paths.get(".").toAbsolutePath());
+        }
+        Cfg cfg = Cfg.load(configPath);
         new E4DriftAnalysis().run(cfg);
+    }
+
+    private static Path findDefaultConfig() {
+        List<Path> candidates = List.of(
+                Paths.get("src/main/java/thesis/experiments/e4_synthetic_drift.json"),
+                Paths.get("experiments/e4_synthetic_drift.json"),
+                Paths.get("src/main/resources/e4_synthetic_drift.json")
+        );
+        for (Path p : candidates) {
+            if (Files.exists(p)) return p;
+        }
+        return candidates.get(0);
     }
 
     public void run(Cfg cfg) throws Exception {
@@ -173,25 +192,53 @@ public class E4DriftAnalysis {
         Path winCsv = Paths.get(cfg.outputDir, "E4_window.csv");
         Path alrCsv = Paths.get(cfg.outputDir, "E4_alarms.csv");
         Path sumCsv = Paths.get(cfg.outputDir, "E4_summary.csv");
+        Path driftsCsv = Paths.get(cfg.outputDir, cfg.experimentGroup + "_drifts.csv");
+        Path actionsCsv = Paths.get(cfg.outputDir, "E4_dasrp_actions.csv");
+
+        int runTotal = cfg.generators.size() * cfg.magnitudes.size()
+                * cfg.seeds.size() * cfg.methods.size();
+        int runIdx = 0;
+
         List<RunResult> all = new ArrayList<>();
 
         try (PrintWriter w = new PrintWriter(new FileWriter(winCsv.toFile()));
-             PrintWriter a = new PrintWriter(new FileWriter(alrCsv.toFile()))) {
+             PrintWriter a = new PrintWriter(new FileWriter(alrCsv.toFile()));
+             PrintWriter drifts = new PrintWriter(new FileWriter(driftsCsv.toFile()));
+             PrintWriter actions = new PrintWriter(new FileWriter(actionsCsv.toFile()))) {
+
             w.println(windowHeader());
             a.println(alarmHeader());
+
+            drifts.println("dataset,variant,seed,alarm_at,kappa_before_500,"
+                    + "kappa_after_500,recovery_instances,drift_type");
+            drifts.flush();
+
+            actions.println("dataset,variant,seed,alarm_at,"
+                    + "kept,surgical,full,no_replacement,"
+                    + "weighted_preds_total,fallbacks_total,drifting_features_detected");
+            actions.flush();
+
             for (GeneratorSpec g : cfg.generators) {
                 for (String mag : cfg.magnitudes) {
                     Magnitude m = Magnitude.valueOf(mag);
                     for (int seed : cfg.seeds) {
                         for (String method : cfg.methods) {
+                            runIdx++;
                             try {
-                                RunResult r = runOne(cfg, g, m, method, seed, w);
+                                RunResult r = runOne(cfg, g, m, method, seed,
+                                        w, drifts, actions, runIdx, runTotal);
+                                r.status = "OK";
                                 writeAlarmsCsv(a, r);
                                 all.add(r);
                             } catch (Exception ex) {
-                                System.err.printf("[E4][FAIL] %s|%s|%s|seed=%d -> %s%n",
-                                        g.name, method, mag, seed, ex);
+                                System.err.printf("[E4][FAIL] (%d/%d) %s|%s|%s|seed=%d -> %s%n",
+                                        runIdx, runTotal, g.name, method, mag, seed, ex);
                                 ex.printStackTrace(System.err);
+                                RunResult r = new RunResult();
+                                r.generator = g.name; r.method = method; r.magnitude = mag;
+                                r.seed = seed; r.abrupt = g.abrupt;
+                                r.status = "FAIL";
+                                all.add(r);
                             }
                         }
                     }
@@ -204,10 +251,20 @@ public class E4DriftAnalysis {
         writeMinDetectableMagnitude(cfg, all);
         writeRanking(cfg, all);
         System.out.println("[E4] Done -> " + cfg.outputDir);
+        System.out.println("[E4] Window  -> " + winCsv);
+        System.out.println("[E4] Alarms  -> " + alrCsv);
+        System.out.println("[E4] Summary -> " + sumCsv);
+        System.out.println("[E4] Drifts  -> " + driftsCsv);
+        System.out.println("[E4] Actions -> " + actionsCsv);
     }
 
     public RunResult runOne(Cfg cfg, GeneratorSpec g, Magnitude mag, String methodName,
-                            int seed, PrintWriter wcsv) throws Exception {
+                            int seed, PrintWriter wcsv,
+                            PrintWriter driftsCsv, PrintWriter actionsCsv,
+                            int runIdx, int runTotal) throws Exception {
+
+        System.out.printf(Locale.ROOT, "[E4] (%d/%d) %s | %s | %s | seed=%d ...%n",
+                runIdx, runTotal, g.name, methodName, mag.name(), seed);
 
         InstanceStream stream = buildStreamWithMagnitude(g, mag, seed);
         if (stream instanceof OptionHandler) ((OptionHandler) stream).prepareForUse();
@@ -249,6 +306,8 @@ public class E4DriftAnalysis {
         MetricsCollector mM = new MetricsCollector(C, cfg.windowSize, cfg.logEvery, cfg.ramSampleEvery);
         MetricsCollector mN = new MetricsCollector(C, cfg.windowSize, cfg.logEvery, cfg.ramSampleEvery);
 
+        DriftLogger dl = new DriftLogger(driftsCsv, g.name, methodName, seed, 500, 500);
+
         long n = collected;
         long driftCount = 0, selChgCount = 0;
         int[] lastSel = main.getCurrentSelection().clone();
@@ -257,6 +316,10 @@ public class E4DriftAnalysis {
         Set<Integer> gtFeatures = groundTruthFeatures(g);
         Set<Integer> nextGtSet = new HashSet<>();
         for (int p : gtPositions) nextGtSet.add(p);
+
+        long lastLogTime = System.nanoTime();
+        long lastLogN = n;
+        double lastThr = 0.0;
 
         while (stream.hasMoreInstances() && n < cfg.maxInstances) {
             Instance raw = stream.nextInstance().getData();
@@ -279,6 +342,9 @@ public class E4DriftAnalysis {
             mc.update(y, yhat, elapsed);
             mM.update(y, yMaj, 0);
             mN.update(y, yNC, 0);
+
+            dl.tick(n, mc.snapshot().kappa);
+
             if (alarm) {
                 mc.onDriftAlarm();
                 driftCount++;
@@ -286,6 +352,21 @@ public class E4DriftAnalysis {
                 ev.instance = n;
                 ev.detectedFeatures.addAll(drifting);
                 alarms.add(ev);
+                dl.onAlarm(n, mc, drifting != null && !drifting.isEmpty());
+                if (da != null) {
+                    actionsCsv.printf(Locale.ROOT, "%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d%n",
+                            g.name, methodName, seed, n,
+                            da.getTotalKept(), da.getTotalSurgical(),
+                            da.getTotalFull(), da.getTotalNoReplacement(),
+                            da.getWeightedPredictions(), da.getUnweightedFallbacks(),
+                            drifting == null ? 0 : drifting.size());
+                    actionsCsv.flush();
+                } else {
+                    actionsCsv.printf(Locale.ROOT, "%s,%s,%d,%d,0,0,0,0,0,0,%d%n",
+                            g.name, methodName, seed, n,
+                            drifting == null ? 0 : drifting.size());
+                    actionsCsv.flush();
+                }
             }
 
             if (mh.selector != null) mh.selector.update(x, y, alarm, drifting);
@@ -311,19 +392,31 @@ public class E4DriftAnalysis {
                 for (int p : gtPositions) {
                     if (p > n - cfg.logEvery && p <= n) { trueDriftHere = 1; break; }
                 }
+                long now = System.nanoTime();
+                double dtSec = (now - lastLogTime) / 1e9;
+                double thr = dtSec > 0.0 ? (double) (n - lastLogN) / dtSec : 0.0;
+                lastLogTime = now;
+                lastLogN = n;
+                lastThr = thr;
+                double stab = Double.isNaN(s.lastFeatureStabilityRatio)
+                        ? 1.0 : s.lastFeatureStabilityRatio;
+
                 wcsv.printf(Locale.ROOT,
-                        "%d,%s,%s,%s,%d,%d,%d,\"%s\",\"%s\",%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%.4f,%.6f%n",
+                        "%d,%s,%s,%s,%d,%d,%d,\"%s\",\"%s\",%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%.4f,%.6f,%.2f,%.1f%n",
                         n, g.name, methodName, mag.name(), seed,
                         trueDriftHere, alarm ? 1 : 0,
                         joinSet(drifting), joinSet(gtFeatures),
                         s.accuracyWindow, s.kappa, s.kappaPer,
                         mM.snapshot().accuracyWindow, mN.snapshot().accuracyWindow,
                         s.lastRecoveryTime, driftCount, selChgCount,
-                        Double.isNaN(s.featureStabilityRatio) ? 1.0 : s.featureStabilityRatio,
-                        s.ramHoursGB);
+                        stab,
+                        s.ramHoursGB,
+                        thr, s.peakMB);
                 wcsv.flush();
             }
         }
+
+        dl.flushPending(n, mc.snapshot().kappa);
 
         MetricsCollector.Snapshot s = mc.snapshot();
         RunResult r = new RunResult();
@@ -337,7 +430,11 @@ public class E4DriftAnalysis {
             r.recoveryTime = -1.0;
         }
         r.featureStability = Double.isNaN(s.featureStabilityRatio) ? 1.0 : s.featureStabilityRatio;
+        r.lastFeatureStability = Double.isNaN(s.lastFeatureStabilityRatio) ? 1.0 : s.lastFeatureStabilityRatio;
         r.ramHours = s.ramHoursGB;
+        r.peakMB = s.peakMB;
+        double elapsedSec = s.elapsedHours * 3600.0;
+        r.throughput = elapsedSec > 0.0 ? (double) n / elapsedSec : lastThr;
         r.driftCount = driftCount;
         r.selectionChangeCount = selChgCount;
         r.gtPositions = gtPositions;
@@ -348,6 +445,7 @@ public class E4DriftAnalysis {
             r.totalKept = da.getTotalKept();
             r.totalSurgical = da.getTotalSurgical();
             r.totalFull = da.getTotalFull();
+            r.totalNoReplacement = da.getTotalNoReplacement();
             r.weightedPredictions = da.getWeightedPredictions();
             r.unweightedFallbacks = da.getUnweightedFallbacks();
         }
@@ -355,12 +453,12 @@ public class E4DriftAnalysis {
         r.featureDetection = computeFeatureDetection(alarms, gtFeatures, "CustomFeatureDrift".equalsIgnoreCase(g.name));
 
         System.out.printf(Locale.ROOT,
-                "[E4] %-18s %-12s %-6s seed=%d  acc=%.4f k=%.4f  drift=%d  TP=%d FP=%d FN=%d  P=%.3f R=%.3f F1=%.3f delay=%.1f%n",
-                g.name, methodName, mag.name(), seed,
+                "[E4] (%d/%d) DONE %-18s %-12s %-6s seed=%d  n=%d  acc=%.4f k=%.4f  drift=%d  TP=%d FP=%d FN=%d  P=%.3f R=%.3f F1=%.3f delay=%.1f peak=%.0fMB thr=%.0f/s%n",
+                runIdx, runTotal, g.name, methodName, mag.name(), seed, n,
                 r.accuracy, r.kappa, r.driftCount,
                 r.detection.tp, r.detection.fp, r.detection.fn,
                 r.detection.precision, r.detection.recall, r.detection.f1,
-                r.detection.meanDetectionDelay);
+                r.detection.meanDetectionDelay, r.peakMB, r.throughput);
         return r;
     }
 
@@ -648,7 +746,7 @@ public class E4DriftAnalysis {
                 + "accuracy_window,kappa_window,kappa_per_window,"
                 + "majority_baseline_window,nochange_baseline_window,"
                 + "recovery_time,drift_count,selection_change_count,"
-                + "feature_stability_ratio,ram_hours";
+                + "feature_stability,ram_hours,throughput_inst_per_sec,peak_ram_mb";
     }
 
     static String alarmHeader() {
@@ -669,27 +767,41 @@ public class E4DriftAnalysis {
     static void writeSummary(List<RunResult> all, Path path) throws Exception {
         try (PrintWriter w = new PrintWriter(new FileWriter(path.toFile()))) {
             w.println("generator,method,magnitude,seed,instances,d,"
-                    + "accuracy,kappa,kappa_per,recovery_time,feature_stability,ram_hours,"
+                    + "accuracy,kappa,kappa_per,recovery_time,"
+                    + "avg_feature_stability,last_feature_stability,"
+                    + "ram_hours,throughput_inst_per_sec,peak_ram_mb,"
                     + "drift_count,selection_change_count,"
                     + "tp,fp,fn,precision,recall,f1,false_alarm_rate,mean_detection_delay,"
                     + "feat_tp,feat_fp,feat_fn,feat_precision,feat_recall,feat_f1,"
-                    + "total_kept,total_surgical,total_full,weighted_predictions,unweighted_fallbacks,"
-                    + "gt_positions");
+                    + "total_kept,total_surgical,total_full,total_no_replacement,"
+                    + "weighted_predictions,unweighted_fallbacks,"
+                    + "gt_positions,status");
             for (RunResult r : all) {
+                if ("FAIL".equals(r.status)) {
+                    w.printf(Locale.ROOT,
+                            "%s,%s,%s,%d,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,0.00,0.0,0,0,"
+                                    + "0,0,0,NaN,NaN,NaN,NaN,NaN,"
+                                    + "0,0,0,NaN,NaN,NaN,"
+                                    + "0,0,0,0,0,0,\"\",FAIL%n",
+                            r.generator, r.method, r.magnitude, r.seed);
+                    continue;
+                }
                 w.printf(Locale.ROOT,
-                        "%s,%s,%s,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%d,%d,"
+                        "%s,%s,%s,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.2f,%.1f,%d,%d,"
                                 + "%d,%d,%d,%.4f,%.4f,%.4f,%.6f,%.2f,"
                                 + "%d,%d,%d,%.4f,%.4f,%.4f,"
-                                + "%d,%d,%d,%d,%d,\"%s\"%n",
+                                + "%d,%d,%d,%d,%d,%d,\"%s\",OK%n",
                         r.generator, r.method, r.magnitude, r.seed, r.instances, r.d,
                         r.accuracy, r.kappa, r.kappaPer, r.recoveryTime,
-                        r.featureStability, r.ramHours, r.driftCount, r.selectionChangeCount,
+                        r.featureStability, r.lastFeatureStability,
+                        r.ramHours, r.throughput, r.peakMB,
+                        r.driftCount, r.selectionChangeCount,
                         r.detection.tp, r.detection.fp, r.detection.fn,
                         r.detection.precision, r.detection.recall, r.detection.f1,
                         r.detection.falseAlarmRate, r.detection.meanDetectionDelay,
                         r.featureDetection.tp, r.featureDetection.fp, r.featureDetection.fn,
                         r.featureDetection.precision, r.featureDetection.recall, r.featureDetection.f1,
-                        r.totalKept, r.totalSurgical, r.totalFull,
+                        r.totalKept, r.totalSurgical, r.totalFull, r.totalNoReplacement,
                         r.weightedPredictions, r.unweightedFallbacks,
                         joinIntArr(r.gtPositions));
             }
@@ -700,6 +812,7 @@ public class E4DriftAnalysis {
         Path p = Paths.get(cfg.outputDir, "E4_aggregated.csv");
         Map<String, List<RunResult>> grp = new LinkedHashMap<>();
         for (RunResult r : all) {
+            if ("FAIL".equals(r.status)) continue;
             String key = r.generator + "|" + r.method + "|" + r.magnitude;
             grp.computeIfAbsent(key, k -> new ArrayList<>()).add(r);
         }
@@ -708,7 +821,8 @@ public class E4DriftAnalysis {
                     + "mean_accuracy,std_accuracy,mean_kappa,std_kappa,"
                     + "mean_recovery,std_recovery,mean_f1,std_f1,"
                     + "mean_precision,mean_recall,mean_false_alarm_rate,mean_detection_delay,"
-                    + "mean_feat_f1,mean_feat_precision,mean_feat_recall");
+                    + "mean_feat_f1,mean_feat_precision,mean_feat_recall,"
+                    + "mean_throughput,mean_peak_mb");
             for (Map.Entry<String, List<RunResult>> e : grp.entrySet()) {
                 List<RunResult> rs = e.getValue();
                 String[] keys = e.getKey().split("\\|");
@@ -723,13 +837,16 @@ public class E4DriftAnalysis {
                 double[] ff1 = rs.stream().mapToDouble(r -> r.featureDetection.f1).toArray();
                 double[] fpr = rs.stream().mapToDouble(r -> r.featureDetection.precision).toArray();
                 double[] fre = rs.stream().mapToDouble(r -> r.featureDetection.recall).toArray();
+                double[] thr = rs.stream().mapToDouble(r -> r.throughput).toArray();
+                double[] pkm = rs.stream().mapToDouble(r -> r.peakMB).toArray();
                 w.printf(Locale.ROOT,
-                        "%s,%s,%s,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.2f,%.4f,%.4f,%.4f%n",
+                        "%s,%s,%s,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.2f,%.4f,%.4f,%.4f,%.2f,%.1f%n",
                         keys[0], keys[1], keys[2], rs.size(),
                         mean(acc), std(acc), mean(kap), std(kap),
                         mean(rec), std(rec), mean(f1), std(f1),
                         mean(pr), mean(re), mean(far), mean(del),
-                        mean(ff1), mean(fpr), mean(fre));
+                        mean(ff1), mean(fpr), mean(fre),
+                        mean(thr), mean(pkm));
             }
         }
     }
@@ -739,6 +856,7 @@ public class E4DriftAnalysis {
         Map<String, Map<String, double[]>> agg = new LinkedHashMap<>();
         Map<String, Map<String, Double>> recAgg = new LinkedHashMap<>();
         for (RunResult r : all) {
+            if ("FAIL".equals(r.status)) continue;
             String key = r.method + "|" + r.generator;
             agg.computeIfAbsent(key, k -> new LinkedHashMap<>())
                     .computeIfAbsent(r.magnitude, k -> new double[2]);
@@ -750,6 +868,7 @@ public class E4DriftAnalysis {
         }
         Map<String, Map<String, Integer>> counts = new LinkedHashMap<>();
         for (RunResult r : all) {
+            if ("FAIL".equals(r.status)) continue;
             String key = r.method + "|" + r.generator;
             counts.computeIfAbsent(key, k -> new LinkedHashMap<>()).merge(r.magnitude, 1, Integer::sum);
         }
@@ -784,6 +903,7 @@ public class E4DriftAnalysis {
         Map<String, double[]> mAgg = new LinkedHashMap<>();
         Map<String, Integer> nAgg = new LinkedHashMap<>();
         for (RunResult r : all) {
+            if ("FAIL".equals(r.status)) continue;
             double[] a = mAgg.computeIfAbsent(r.method, k -> new double[4]);
             a[0] += r.kappa;
             a[1] += r.detection.f1;

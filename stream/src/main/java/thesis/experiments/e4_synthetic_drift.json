@@ -13,7 +13,10 @@
   "f1_threshold": 0.5,
   "kappa_threshold": 0.5,
 
-  "seeds": [1, 2, 3, 4, 5],
+  "drift_before_window": 500,
+  "drift_after_window": 500,
+
+  "seeds": [1],
 
   "magnitudes": ["LOW", "MEDIUM", "HIGH"],
 

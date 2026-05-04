@@ -10,25 +10,17 @@
   "max_instances": 100000,
   "detector_delta": 0.002,
   "skip_missing_arff": true,
+  "real_datasets_read_all": true,
 
-  "seeds": [1, 2, 3, 4, 5],
+  "seeds": [1],
 
   "variants": [
-    { "name": "SRP+S1",      "mode": "BASELINE_SRP_S1" },
-    { "name": "ARF+S2",      "mode": "BASELINE_ARF_S2", "detector": "ADWIN", "w_post_drift": 1000 },
-
-    { "name": "DA-SRP-A",    "mode": "DASRP_A",   "tau": 0.5,                "detector": "ADWIN", "kswin_alpha": 0.005, "kswin_window": 200 },
-    { "name": "DA-SRP-AB",   "mode": "DASRP_AB",  "tau": 0.5, "w1": 0.7,     "detector": "ADWIN", "kswin_alpha": 0.005, "kswin_window": 200 },
-    { "name": "DA-SRP-ABC",  "mode": "DASRP_ABC", "tau": 0.5, "w1": 0.7,     "detector": "ADWIN", "kswin_alpha": 0.005, "kswin_window": 200 }
+    { "name": "SRP+S1",     "mode": "BASELINE_SRP_S1" },
+    { "name": "ARF+S2",     "mode": "BASELINE_ARF_S2", "w_post_drift": 1000 },
+    { "name": "DA-SRP-A",   "mode": "DASRP_A",   "tau": 0.5 },
+    { "name": "DA-SRP-AB",  "mode": "DASRP_AB",  "tau": 0.5, "w1": 0.7 },
+    { "name": "DA-SRP-ABC", "mode": "DASRP_ABC", "tau": 0.5, "w1": 0.7, "kswin_alpha": 0.005, "kswin_window": 200 }
   ],
-
-  "sensitivity_grid": {
-    "base_mode": "DASRP_ABC",
-    "base_name": "DA-SRP-ABC-grid",
-    "w1": [0.5, 0.6, 0.7, 0.8, 0.9],
-    "kswin_alpha": [0.005, 0.01, 0.05],
-    "kswin_window": [100, 300, 500]
-  },
 
   "datasets": [
     { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 100000, "noise_features": 5 },
