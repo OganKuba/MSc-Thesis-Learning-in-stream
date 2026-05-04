@@ -1,37 +1,42 @@
 package thesis.evaluation;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
-
 public class PrequentialAccuracy {
 
     private final int windowSize;
-    private final Deque<Boolean> window;
+    private final boolean[] win;
+    private int head;
+    private int size;
     private long correct;
 
     public PrequentialAccuracy(int windowSize) {
         if (windowSize < 1) throw new IllegalArgumentException("windowSize must be >= 1");
         this.windowSize = windowSize;
-        this.window = new ArrayDeque<>(windowSize);
+        this.win = new boolean[windowSize];
     }
 
     public void update(int yTrue, int yPred) {
         boolean ok = (yTrue == yPred);
-        if (window.size() == windowSize) {
-            if (Boolean.TRUE.equals(window.pollFirst())) correct--;
+        int writeIdx;
+        if (size == windowSize) {
+            if (win[head]) correct--;
+            writeIdx = head;
+            head = (head + 1) % windowSize;
+        } else {
+            writeIdx = (head + size) % windowSize;
+            size++;
         }
-        window.addLast(ok);
+        win[writeIdx] = ok;
         if (ok) correct++;
     }
 
-    public double getAccuracy() {
-        return window.isEmpty() ? 0.0 : (double) correct / window.size();
-    }
-
-    public int getCount() { return window.size(); }
+    public double getAccuracy() { return size == 0 ? 0.0 : (double) correct / size; }
+    public int getCount()       { return size; }
+    public int getWindowSize()  { return windowSize; }
 
     public void reset() {
-        window.clear();
+        head = 0;
+        size = 0;
         correct = 0;
+        for (int i = 0; i < windowSize; i++) win[i] = false;
     }
 }

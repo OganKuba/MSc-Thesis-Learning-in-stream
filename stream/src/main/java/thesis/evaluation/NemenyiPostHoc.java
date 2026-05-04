@@ -22,7 +22,7 @@ public class NemenyiPostHoc {
     public NemenyiPostHoc() { this(0.05); }
 
     public NemenyiPostHoc(double alpha) {
-        if (alpha != 0.05 && alpha != 0.10) {
+        if (Math.abs(alpha - 0.05) > 1e-9 && Math.abs(alpha - 0.10) > 1e-9) {
             throw new IllegalArgumentException("alpha must be 0.05 or 0.10 (table-driven)");
         }
         this.alpha = alpha;
@@ -32,10 +32,13 @@ public class NemenyiPostHoc {
         if (averageRanks == null || averageRanks.length < 2) {
             throw new IllegalArgumentException("need at least 2 methods");
         }
+        if (numDatasets < 1) throw new IllegalArgumentException("numDatasets < 1");
         int k = averageRanks.length;
-        if (k >= Q_ALPHA_005.length) throw new IllegalArgumentException("k too large for built-in q-table (max " + (Q_ALPHA_005.length - 1) + ")");
-        double q = (alpha == 0.05) ? Q_ALPHA_005[k] : Q_ALPHA_010[k];
-        double cd = q * Math.sqrt((k * (k + 1)) / (6.0 * numDatasets));
+        if (k >= Q_ALPHA_005.length) {
+            throw new IllegalArgumentException("k too large for built-in q-table (max " + (Q_ALPHA_005.length - 1) + ")");
+        }
+        double q = (Math.abs(alpha - 0.05) < 1e-9) ? Q_ALPHA_005[k] : Q_ALPHA_010[k];
+        double cd = q * Math.sqrt(((double) k * (k + 1)) / (6.0 * numDatasets));
 
         List<int[]> sigPairs = new ArrayList<>();
         double[][] diffs = new double[k][k];
@@ -45,7 +48,7 @@ public class NemenyiPostHoc {
                 double d = Math.abs(averageRanks[i] - averageRanks[j]);
                 diffs[i][j] = d;
                 diffs[j][i] = d;
-                if (d > cd) {
+                if (d > cd + 1e-12) {
                     sig[i][j] = true;
                     sig[j][i] = true;
                     sigPairs.add(new int[]{i, j});

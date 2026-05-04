@@ -9,14 +9,13 @@ import thesis.selection.FeatureSelector;
 import java.util.Arrays;
 import java.util.Set;
 
-@Getter
 public class HoeffdingTreeWrapper implements ModelWrapper {
 
-    private final FeatureSelector selector;
+    @Getter private final FeatureSelector selector;
     private final FeatureSpace space;
-    private final int gracePeriod;
-    private final double splitConfidence;
-    private final boolean resetOnSelectionChange;
+    @Getter private final int gracePeriod;
+    @Getter private final double splitConfidence;
+    @Getter private final boolean resetOnSelectionChange;
 
     private HoeffdingTree tree;
     private InstancesHeader reducedHeader;
@@ -55,7 +54,7 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
     }
 
     private void rebuild() {
-        cachedSelection = selector.getCurrentSelection();
+        cachedSelection = selector.getCurrentSelection().clone();
         reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_ht");
         tree = newTree();
         tree.setModelContext(reducedHeader);
@@ -64,7 +63,7 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
     private void syncSelection() {
         int[] curr = selector.getCurrentSelection();
         if (Arrays.equals(curr, cachedSelection)) return;
-        cachedSelection = curr;
+        cachedSelection = curr.clone();
         reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_ht");
         if (resetOnSelectionChange) {
             tree = newTree();
@@ -83,6 +82,7 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
     @Override
     public int predict(Instance full) {
         double[] votes = predictProba(full);
+        if (votes == null || votes.length == 0) return 0;
         int best = 0;
         for (int i = 1; i < votes.length; i++) if (votes[i] > votes[best]) best = i;
         return best;
@@ -101,16 +101,13 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
                 full, space, cachedSelection, reducedHeader);
         reduced.setClassValue(classLabel);
         tree.trainOnInstance(reduced);
-        selector.update(space.extractFeatures(full), classLabel,
-                driftAlarm, driftingFeatures == null ? Set.of() : driftingFeatures);
     }
 
     @Override
-    public FeatureSelector getSelector()  { return selector; }
+    public int[] getCurrentSelection() { return cachedSelection.clone(); }
+
     @Override
-    public int[] getCurrentSelection()    { return cachedSelection.clone(); }
-    @Override
-    public void reset()                   { rebuild(); }
+    public void reset() { rebuild(); }
 
     @Override
     public String name() {

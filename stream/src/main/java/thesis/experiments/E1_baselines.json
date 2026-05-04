@@ -1,0 +1,25 @@
+{
+  "experiment_group": "E1_baselines",
+  "output_dir": "results/E1_baselines",
+  "warmup": 1500,
+  "window_size": 1000,
+  "log_every": 1000,
+  "ram_sample_every": 200,
+  "max_instances": 100000,
+  "skip_missing_arff": true,
+
+  "models": ["HT", "ARF", "SRP"],
+  "seeds": [1, 2, 3, 4, 5],
+
+  "datasets": [
+    { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 100000, "noise_features": 5 },
+    { "name": "Hyperplane",   "type": "synthetic", "generator": "Hyperplane",         "n": 100000, "sigma": 0.01, "noise_features": 5 },
+    { "name": "RandomRBF",    "type": "synthetic", "generator": "RandomRBF",          "n": 100000, "speed": 0.001, "noise_features": 5 },
+    { "name": "STAGGER",      "type": "synthetic", "generator": "STAGGER",            "n": 100000, "noise_features": 0 },
+    { "name": "FeatureDrift", "type": "synthetic", "generator": "CustomFeatureDrift", "n": 100000, "drift_features": 5, "sigma": 0.01, "noise_features": 5 },
+
+    { "name": "YahooFinance", "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/yahoo_finance/data/arff/yahoo_finance.arff" },
+    { "name": "NYCTaxi",      "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/nyc_taxi/data/arff/nyc_taxi.arff" },
+    { "name": "NHTS",         "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/data/arff/nhts.arff" }
+  ]
+}

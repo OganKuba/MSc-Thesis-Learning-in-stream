@@ -1,0 +1,28 @@
+{
+  "experiment_group": "E3_prototype",
+  "output_dir": "results/E3_prototype",
+
+  "warmup": 1500,
+  "window_size": 500,
+  "log_every": 500,
+  "ram_sample_every": 200,
+  "importance_update_every": 500,
+  "max_instances": 10000,
+  "detector_delta": 0.002,
+  "skip_missing_arff": true,
+
+  "seeds": [1, 2],
+
+  "variants": [
+    { "name": "SRP+S1",      "mode": "BASELINE_SRP_S1" },
+    { "name": "ARF+S2",      "mode": "BASELINE_ARF_S2", "detector": "ADWIN", "w_post_drift": 500 },
+    { "name": "DA-SRP-A",    "mode": "DASRP_A",   "tau": 0.5,            "detector": "ADWIN", "kswin_alpha": 0.01, "kswin_window": 300 },
+    { "name": "DA-SRP-AB",   "mode": "DASRP_AB",  "tau": 0.5, "w1": 0.7, "detector": "ADWIN", "kswin_alpha": 0.01, "kswin_window": 300 },
+    { "name": "DA-SRP-ABC",  "mode": "DASRP_ABC", "tau": 0.5, "w1": 0.7, "detector": "ADWIN", "kswin_alpha": 0.01, "kswin_window": 300 }
+  ],
+
+  "datasets": [
+    { "name": "FeatureDrift", "type": "synthetic", "generator": "CustomFeatureDrift", "n": 10000, "drift_features": 5, "sigma": 0.10, "noise_features": 5 },
+    { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 10000, "noise_features": 5 }
+  ]
+}

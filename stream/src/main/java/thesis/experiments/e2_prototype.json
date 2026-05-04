@@ -1,0 +1,31 @@
+{
+  "experiment_group": "E2_prototype",
+  "output_dir": "results/E2_prototype",
+
+  "warmup": 500,
+  "window_size": 500,
+  "log_every": 500,
+  "ram_sample_every": 200,
+  "max_instances": 8000,
+  "detector_delta": 0.002,
+  "skip_missing_arff": true,
+
+  "seeds": [1],
+
+  "variants": [
+    { "name": "ARF+S1",         "model": "ARF", "selector": "S1" },
+    { "name": "SRP+S1",         "model": "SRP", "selector": "S1" },
+
+    { "name": "ARF+S2-ADWIN",   "model": "ARF", "selector": "S2", "detector": "ADWIN",  "w_post_drift": 500 },
+    { "name": "ARF+S2-HDDM_A",  "model": "ARF", "selector": "S2", "detector": "HDDM_A", "w_post_drift": 500 },
+    { "name": "SRP+S2-HDDM_W",  "model": "SRP", "selector": "S2", "detector": "HDDM_W", "w_post_drift": 500 },
+
+    { "name": "ARF+S3-N500",    "model": "ARF", "selector": "S3", "periodic_interval": 500  },
+    { "name": "SRP+S3-N1000",   "model": "SRP", "selector": "S3", "periodic_interval": 1000 }
+  ],
+
+  "datasets": [
+    { "name": "FeatureDrift", "type": "synthetic", "generator": "CustomFeatureDrift", "n": 8000, "drift_features": 5, "sigma": 0.05, "noise_features": 5 },
+    { "name": "YahooFinance", "type": "arff",      "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/yahoo_finance/data/arff/yahoo_finance.arff" }
+  ]
+}

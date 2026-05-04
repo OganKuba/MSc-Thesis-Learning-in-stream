@@ -1,0 +1,35 @@
+{
+  "experiment_group": "E5_prototype",
+  "output_dir": "results/E5_prototype",
+
+  "warmup": 1000,
+  "window_size": 500,
+  "log_every": 500,
+  "ram_sample_every": 200,
+  "tolerance_window": 500,
+  "max_instances": 12000,
+  "recovery_cap_fraction": 0.5,
+  "method_periodic_interval": 500,
+  "method_w_post_drift": 300,
+
+  "adwin_delta": 0.002,
+  "hddm_drift_confidence": 0.001,
+  "hddm_warning_confidence": 0.005,
+  "hddm_lambda": 0.05,
+  "kswin_window": 200,
+  "kswin_alpha": 0.005,
+  "kswin_test_every": 50,
+
+  "seeds": [1],
+
+  "magnitudes": ["LOW", "HIGH"],
+
+  "detectors": ["ADWIN", "HDDM_A", "HDDM_W", "KSWIN_GLOBAL"],
+
+  "models": ["ARF+S2"],
+
+  "generators": [
+    { "name": "SEA",                "n": 12000, "noise_features": 0 },
+    { "name": "CustomFeatureDrift", "n": 12000, "noise_features": 5, "drift_features": 5 }
+  ]
+}

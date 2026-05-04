@@ -1,6 +1,7 @@
 package thesis.models;
 
 import com.yahoo.labs.samoa.instances.Instance;
+import lombok.Getter;
 import thesis.selection.FeatureSelector;
 
 import java.util.Arrays;
@@ -8,12 +9,13 @@ import java.util.Set;
 
 public class MajorityClassWrapper implements ModelWrapper {
 
-    private final FeatureSelector selector;
+    @Getter private final FeatureSelector selector;
     private final int numClasses;
     private final long[] counts;
     private long total;
 
     public MajorityClassWrapper(FeatureSelector selector, int numClasses) {
+        if (selector == null) throw new IllegalArgumentException("selector must not be null");
         if (numClasses < 2) throw new IllegalArgumentException("numClasses must be >= 2");
         this.selector = selector;
         this.numClasses = numClasses;
@@ -27,15 +29,16 @@ public class MajorityClassWrapper implements ModelWrapper {
             Arrays.fill(p, 1.0 / numClasses);
             return p;
         }
-        for (int i = 0; i < numClasses; i++) p[i] = (double) counts[i] / total;
+        double inv = 1.0 / total;
+        for (int i = 0; i < numClasses; i++) p[i] = counts[i] * inv;
         return p;
     }
 
     @Override
     public int predict(Instance full) {
         int best = 0;
-        long bestCount = -1;
-        for (int i = 0; i < numClasses; i++) {
+        long bestCount = counts[0];
+        for (int i = 1; i < numClasses; i++) {
             if (counts[i] > bestCount) { bestCount = counts[i]; best = i; }
         }
         return best;
@@ -53,9 +56,6 @@ public class MajorityClassWrapper implements ModelWrapper {
     public void train(Instance full, int classLabel, boolean driftAlarm, Set<Integer> driftingFeatures) {
         train(full, classLabel);
     }
-
-    @Override
-    public FeatureSelector getSelector() { return selector; }
 
     @Override
     public int[] getCurrentSelection() { return selector.getCurrentSelection(); }

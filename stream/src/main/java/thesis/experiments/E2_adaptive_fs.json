@@ -1,0 +1,47 @@
+{
+  "experiment_group": "E2",
+  "output_dir": "results/E2",
+
+  "warmup": 1500,
+  "window_size": 1000,
+  "log_every": 1000,
+  "ram_sample_every": 200,
+  "max_instances": 100000,
+  "detector_delta": 0.002,
+  "skip_missing_arff": true,
+
+  "seeds": [1, 2, 3, 4, 5],
+
+  "variants": [
+    { "name": "ARF+S1",         "model": "ARF", "selector": "S1" },
+    { "name": "SRP+S1",         "model": "SRP", "selector": "S1" },
+
+    { "name": "ARF+S2-ADWIN",   "model": "ARF", "selector": "S2", "detector": "ADWIN",  "w_post_drift": 1000 },
+    { "name": "ARF+S2-HDDM_A",  "model": "ARF", "selector": "S2", "detector": "HDDM_A", "w_post_drift": 1000 },
+    { "name": "ARF+S2-HDDM_W",  "model": "ARF", "selector": "S2", "detector": "HDDM_W", "w_post_drift": 1000 },
+    { "name": "SRP+S2-ADWIN",   "model": "SRP", "selector": "S2", "detector": "ADWIN",  "w_post_drift": 1000 },
+    { "name": "SRP+S2-HDDM_A",  "model": "SRP", "selector": "S2", "detector": "HDDM_A", "w_post_drift": 1000 },
+    { "name": "SRP+S2-HDDM_W",  "model": "SRP", "selector": "S2", "detector": "HDDM_W", "w_post_drift": 1000 },
+
+    { "name": "ARF+S3-N500",    "model": "ARF", "selector": "S3", "periodic_interval": 500  },
+    { "name": "ARF+S3-N1000",   "model": "ARF", "selector": "S3", "periodic_interval": 1000 },
+    { "name": "ARF+S3-N2000",   "model": "ARF", "selector": "S3", "periodic_interval": 2000 },
+    { "name": "SRP+S3-N500",    "model": "SRP", "selector": "S3", "periodic_interval": 500  },
+    { "name": "SRP+S3-N1000",   "model": "SRP", "selector": "S3", "periodic_interval": 1000 },
+    { "name": "SRP+S3-N2000",   "model": "SRP", "selector": "S3", "periodic_interval": 2000 },
+
+    { "name": "SRP+S4",         "model": "SRP", "selector": "S4", "detector": "ADWIN", "periodic_interval": 1000, "w_post_drift": 1000 }
+  ],
+
+  "datasets": [
+    { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 100000, "noise_features": 5 },
+    { "name": "Hyperplane",   "type": "synthetic", "generator": "Hyperplane",         "n": 100000, "sigma": 0.01, "noise_features": 5 },
+    { "name": "RandomRBF",    "type": "synthetic", "generator": "RandomRBF",          "n": 100000, "speed": 0.001, "noise_features": 5 },
+    { "name": "STAGGER",      "type": "synthetic", "generator": "STAGGER",            "n": 100000, "noise_features": 0 },
+    { "name": "FeatureDrift", "type": "synthetic", "generator": "CustomFeatureDrift", "n": 100000, "drift_features": 5, "sigma": 0.01, "noise_features": 5 },
+
+    { "name": "YahooFinance", "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/yahoo_finance/data/arff/yahoo_finance.arff" },
+    { "name": "NYCTaxi",      "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/nyc_taxi/data/arff/nyc_taxi.arff" },
+    { "name": "NHTS",         "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/data/arff/nhts.arff" }
+  ]
+}

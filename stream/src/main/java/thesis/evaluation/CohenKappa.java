@@ -1,8 +1,5 @@
 package thesis.evaluation;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
-
 public class CohenKappa {
 
     private final int numClasses;
@@ -10,7 +7,10 @@ public class CohenKappa {
     private final long[][] cm;
     private final long[] rowTotals;
     private final long[] colTotals;
-    private final Deque<int[]> window;
+    private final int[] winTrue;
+    private final int[] winPred;
+    private int head;
+    private int size;
     private long total;
     private long correct;
 
@@ -22,21 +22,32 @@ public class CohenKappa {
         this.cm = new long[numClasses][numClasses];
         this.rowTotals = new long[numClasses];
         this.colTotals = new long[numClasses];
-        this.window = new ArrayDeque<>(windowSize);
+        this.winTrue = new int[windowSize];
+        this.winPred = new int[windowSize];
     }
 
     public void update(int yTrue, int yPred) {
-        if (yTrue < 0 || yTrue >= numClasses || yPred < 0 || yPred >= numClasses) return;
-        if (window.size() == windowSize) {
-            int[] old = window.pollFirst();
-            int ot = old[0], op = old[1];
+        if (yTrue < 0 || yTrue >= numClasses)
+            throw new IllegalArgumentException("yTrue out of range: " + yTrue);
+        if (yPred < 0 || yPred >= numClasses)
+            throw new IllegalArgumentException("yPred out of range: " + yPred);
+
+        int writeIdx;
+        if (size == windowSize) {
+            int ot = winTrue[head], op = winPred[head];
             cm[ot][op]--;
             rowTotals[ot]--;
             colTotals[op]--;
             total--;
             if (ot == op) correct--;
+            writeIdx = head;
+            head = (head + 1) % windowSize;
+        } else {
+            writeIdx = (head + size) % windowSize;
+            size++;
         }
-        window.addLast(new int[]{yTrue, yPred});
+        winTrue[writeIdx] = yTrue;
+        winPred[writeIdx] = yPred;
         cm[yTrue][yPred]++;
         rowTotals[yTrue]++;
         colTotals[yPred]++;
@@ -52,16 +63,18 @@ public class CohenKappa {
         for (int i = 0; i < numClasses; i++) {
             pe += (rowTotals[i] / n) * (colTotals[i] / n);
         }
-        if (1.0 - pe < 1e-12) return 0.0;
-        return (po - pe) / (1.0 - pe);
+        double denom = 1.0 - pe;
+        if (Math.abs(denom) < 1e-12) return po >= 1.0 - 1e-12 ? 1.0 : 0.0;
+        double k = (po - pe) / denom;
+        if (k > 1.0) k = 1.0;
+        if (k < -1.0) k = -1.0;
+        return k;
     }
 
-    public double getAccuracy() {
-        return total == 0 ? 0.0 : (double) correct / total;
-    }
-
+    public double getAccuracy() { return total == 0 ? 0.0 : (double) correct / total; }
     public long getWindowCount() { return total; }
     public int getWindowSize()   { return windowSize; }
+    public int getNumClasses()   { return numClasses; }
 
     public void reset() {
         for (int i = 0; i < numClasses; i++) {
@@ -69,7 +82,8 @@ public class CohenKappa {
             colTotals[i] = 0;
             for (int j = 0; j < numClasses; j++) cm[i][j] = 0;
         }
-        window.clear();
+        head = 0;
+        size = 0;
         total = 0;
         correct = 0;
     }

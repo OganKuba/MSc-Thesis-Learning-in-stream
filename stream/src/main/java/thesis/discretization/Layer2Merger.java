@@ -78,7 +78,7 @@ public final class Layer2Merger {
             tv += Math.abs(pa - pb);
         }
         tv *= 0.5;
-        double weight = Math.min(countA, countB) + 1.0;
+        double weight = (countA + countB) + numClasses;
         return tv * weight;
     }
 }

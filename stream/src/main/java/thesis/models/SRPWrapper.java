@@ -11,40 +11,47 @@ import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.Set;
 
-@Getter
 public class SRPWrapper implements ModelWrapper {
 
     private static final String[] ENSEMBLE_FIELD_CANDIDATES = {
             "ensemble", "learners", "baseLearners", "classifiers"
     };
-
     private static final String[] SUBSPACE_FIELD_CANDIDATES = {
             "subSpaceIndexes", "subspaceIndexes", "subSpace", "subspace",
             "indices", "subSpaceIndices", "subspaceIndices"
     };
 
-    private final FeatureSelector selector;
+    @Getter private final FeatureSelector selector;
     private final FeatureSpace space;
-    private final int ensembleSize;
-    private final double lambda;
-    private final boolean resetOnSelectionChange;
+    @Getter private final int ensembleSize;
+    @Getter private final double lambda;
+    @Getter private final boolean resetOnSelectionChange;
+    @Getter private final boolean useHardFilter;
 
     private StreamingRandomPatches srp;
     private InstancesHeader reducedHeader;
     private int[] cachedSelection;
 
+    private static final boolean DIAG = Boolean.getBoolean("thesis.diag");
+
     public SRPWrapper(FeatureSelector selector, InstancesHeader fullHeader) {
-        this(selector, fullHeader, 10, 6.0, false);
+        this(selector, fullHeader, 10, 6.0, false, true);
     }
 
     public SRPWrapper(FeatureSelector selector, InstancesHeader fullHeader,
                       int ensembleSize, double lambda,
                       boolean resetOnSelectionChange) {
+        this(selector, fullHeader, ensembleSize, lambda, resetOnSelectionChange, true);
+    }
+
+    public SRPWrapper(FeatureSelector selector, InstancesHeader fullHeader,
+                      int ensembleSize, double lambda,
+                      boolean resetOnSelectionChange,
+                      boolean useHardFilter) {
         if (selector == null) throw new IllegalArgumentException("selector must not be null");
         if (fullHeader == null) throw new IllegalArgumentException("fullHeader must not be null");
-        if (!selector.isInitialized()) {
+        if (!selector.isInitialized())
             throw new IllegalArgumentException("selector must be initialized before wrapping");
-        }
         if (ensembleSize < 1) throw new IllegalArgumentException("ensembleSize must be >= 1");
         if (lambda <= 0.0) throw new IllegalArgumentException("lambda must be > 0");
         this.selector = selector;
@@ -52,6 +59,11 @@ public class SRPWrapper implements ModelWrapper {
         this.ensembleSize = ensembleSize;
         this.lambda = lambda;
         this.resetOnSelectionChange = resetOnSelectionChange;
+        this.useHardFilter = useHardFilter;
+        if (!useHardFilter && DIAG) {
+            System.err.println("[SRPWrapper][WARN] useHardFilter=false → SRP sees FULL d features, "
+                    + "FeatureSelector will NOT change model input. Use only for ablation.");
+        }
         rebuild();
     }
 
@@ -59,108 +71,109 @@ public class SRPWrapper implements ModelWrapper {
         StreamingRandomPatches s = new StreamingRandomPatches();
         s.ensembleSizeOption.setValue(ensembleSize);
         trySetCli(s, 'a', String.valueOf(lambda));
+        trySetCli(s, 'o', "randompatches");
         s.prepareForUse();
         return s;
     }
 
-    private static void trySetCli(StreamingRandomPatches s, char optChar, String value) {
+    private static boolean trySetCli(StreamingRandomPatches s, char optChar, String value) {
         try {
-            s.getOptions().getOption(optChar).setValueViaCLIString(value);
-        } catch (Exception ignored) { }
+            com.github.javacliparser.Option opt = s.getOptions().getOption(optChar);
+            if (opt == null) return false;
+            opt.setValueViaCLIString(value);
+            return true;
+        } catch (Exception e) { return false; }
     }
 
     private void rebuild() {
-        cachedSelection = selector.getCurrentSelection();
-        reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_srp");
+        cachedSelection = selector.getCurrentSelection().clone();
         srp = newSRP();
+        reducedHeader = useHardFilter
+                ? FilteredHeaderBuilder.build(space, cachedSelection, "_srp")
+                : space.getHeader();
         srp.setModelContext(reducedHeader);
     }
 
     private void syncSelection() {
         int[] curr = selector.getCurrentSelection();
         if (Arrays.equals(curr, cachedSelection)) return;
-        cachedSelection = curr;
-        reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_srp");
-        if (resetOnSelectionChange) {
-            srp = newSRP();
+        cachedSelection = curr.clone();
+        if (useHardFilter) {
+            reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_srp");
+            if (resetOnSelectionChange) srp = newSRP();
+            srp.setModelContext(reducedHeader);
         }
-        srp.setModelContext(reducedHeader);
+    }
+
+    private Instance toModelInstance(Instance full) {
+        return useHardFilter
+                ? FilteredHeaderBuilder.filteredInstance(full, space, cachedSelection, reducedHeader)
+                : full;
     }
 
     @Override
     public double[] predictProba(Instance full) {
         syncSelection();
-        Instance reduced = FilteredHeaderBuilder.filteredInstance(
-                full, space, cachedSelection, reducedHeader);
-        return srp.getVotesForInstance(reduced);
+        return srp.getVotesForInstance(toModelInstance(full));
     }
 
     @Override
     public int predict(Instance full) {
-        double[] votes = predictProba(full);
+        double[] v = predictProba(full);
+        if (v == null || v.length == 0) return 0;
         int best = 0;
-        for (int i = 1; i < votes.length; i++) if (votes[i] > votes[best]) best = i;
+        for (int i = 1; i < v.length; i++) if (v[i] > v[best]) best = i;
         return best;
     }
 
     @Override
-    public void train(Instance full, int classLabel) {
-        train(full, classLabel, false, Set.of());
-    }
+    public void train(Instance full, int classLabel) { train(full, classLabel, false, Set.of()); }
 
     @Override
     public void train(Instance full, int classLabel,
                       boolean driftAlarm, Set<Integer> driftingFeatures) {
         syncSelection();
-        Instance reduced = FilteredHeaderBuilder.filteredInstance(
-                full, space, cachedSelection, reducedHeader);
-        reduced.setClassValue(classLabel);
-        srp.trainOnInstance(reduced);
-        selector.update(space.extractFeatures(full), classLabel,
-                driftAlarm, driftingFeatures == null ? Set.of() : driftingFeatures);
+        Instance toModel = toModelInstance(full);
+        toModel.setClassValue(classLabel);
+        srp.trainOnInstance(toModel);
     }
 
     public int[] getSubspaceIndices(int learnerIdx) {
-        Object[] ensemble = readEnsembleArray();
-        if (ensemble == null) return new int[0];
-        if (learnerIdx < 0 || learnerIdx >= ensemble.length) {
+        Object[] e = readEnsembleArray();
+        if (e == null) return new int[0];
+        if (learnerIdx < 0 || learnerIdx >= e.length)
             throw new IndexOutOfBoundsException("learnerIdx out of range: " + learnerIdx);
-        }
-        return readSubspace(ensemble[learnerIdx]);
+        return readSubspace(e[learnerIdx]);
     }
 
     public int[][] getAllSubspaceIndices() {
-        Object[] ensemble = readEnsembleArray();
-        if (ensemble == null) return new int[0][];
-        int[][] out = new int[ensemble.length][];
-        for (int i = 0; i < ensemble.length; i++) {
-            out[i] = readSubspace(ensemble[i]);
-        }
+        Object[] e = readEnsembleArray();
+        if (e == null) return new int[0][];
+        int[][] out = new int[e.length][];
+        for (int i = 0; i < e.length; i++) out[i] = readSubspace(e[i]);
         return out;
     }
 
     public int getActualEnsembleSize() {
-        Object[] ensemble = readEnsembleArray();
-        return ensemble == null ? 0 : ensemble.length;
+        Object[] e = readEnsembleArray();
+        return e == null ? 0 : e.length;
     }
 
     public void requireSubspaceField() {
-        Object[] ensemble = readEnsembleArray();
-        if (ensemble == null || ensemble.length == 0) {
-            throw new IllegalStateException(
-                    "SRP ensemble not available — model may need a few train calls first");
+        Object[] e = readEnsembleArray();
+        if (e == null || e.length == 0)
+            throw new IllegalStateException("SRP ensemble not available — train first");
+        Class<?> c = e[0].getClass();
+        while (c != null && c != Object.class) {
+            for (Field f : c.getDeclaredFields()) if (f.getType() == int[].class) return;
+            c = c.getSuperclass();
         }
-        int[] sub = readSubspace(ensemble[0]);
-        if (sub.length == 0) {
-            throw new IllegalStateException(
-                    "Could not locate subspace indices field on " + ensemble[0].getClass().getName() +
-                            " — tried: " + Arrays.toString(SUBSPACE_FIELD_CANDIDATES));
-        }
+        throw new IllegalStateException("No int[] subspace field on " + e[0].getClass().getName());
     }
 
     private Object[] readEnsembleArray() {
-        for (String name : ENSEMBLE_FIELD_CANDIDATES) {
-            Object v = readField(srp, name);
+        for (String n : ENSEMBLE_FIELD_CANDIDATES) {
+            Object v = readField(srp, n);
             if (v == null) continue;
             if (v.getClass().isArray()) {
                 int len = Array.getLength(v);
@@ -174,16 +187,14 @@ public class SRPWrapper implements ModelWrapper {
 
     private static int[] readSubspace(Object learner) {
         if (learner == null) return new int[0];
-        for (String name : SUBSPACE_FIELD_CANDIDATES) {
-            Object v = readField(learner, name);
-            if (v instanceof int[]) {
-                return ((int[]) v).clone();
-            }
+        for (String n : SUBSPACE_FIELD_CANDIDATES) {
+            Object v = readField(learner, n);
+            if (v instanceof int[] && ((int[]) v).length > 0) return ((int[]) v).clone();
             if (v instanceof Integer[]) {
-                Integer[] boxed = (Integer[]) v;
-                int[] out = new int[boxed.length];
-                for (int i = 0; i < boxed.length; i++) out[i] = boxed[i];
-                return out;
+                Integer[] b = (Integer[]) v;
+                int[] o = new int[b.length];
+                for (int i = 0; i < b.length; i++) o[i] = b[i];
+                return o;
             }
         }
         return new int[0];
@@ -196,42 +207,24 @@ public class SRPWrapper implements ModelWrapper {
                 Field f = c.getDeclaredField(name);
                 f.setAccessible(true);
                 return f.get(obj);
-            } catch (NoSuchFieldException e) {
-                c = c.getSuperclass();
-            } catch (IllegalAccessException e) {
-                return null;
-            }
+            } catch (NoSuchFieldException e) { c = c.getSuperclass(); }
+            catch (IllegalAccessException e) { return null; }
         }
         return null;
     }
 
     public Instance buildFilteredInstance(Instance full) {
         syncSelection();
-        return FilteredHeaderBuilder.filteredInstance(full, space, cachedSelection, reducedHeader);
+        return toModelInstance(full);
     }
 
-    public InstancesHeader getReducedHeader() {
-        syncSelection();
-        return reducedHeader;
-    }
+    public InstancesHeader getReducedHeader() { syncSelection(); return reducedHeader; }
+    public FeatureSpace getFeatureSpace() { return space; }
 
-    public FeatureSpace getFeatureSpace() {
-        return space;
-    }
-
-    @Override
-    public FeatureSelector getSelector()  { return selector; }
-    @Override
-    public int[] getCurrentSelection()    { return cachedSelection.clone(); }
-    @Override
-    public void reset()                   { rebuild(); }
-
-    public StreamingRandomPatches getSRP() { return srp; }
-    public int getEnsembleSize()           { return ensembleSize; }
-    public double getLambda()              { return lambda; }
-
-    @Override
-    public String name() {
-        return "SRP(size=" + ensembleSize + ", lambda=" + lambda + ") + " + selector.name();
+    @Override public int[] getCurrentSelection() { return cachedSelection.clone(); }
+    @Override public void reset() { rebuild(); }
+    @Override public String name() {
+        return "SRP(size=" + ensembleSize + ", lambda=" + lambda
+                + ", hardFilter=" + useHardFilter + ") + " + selector.name();
     }
 }

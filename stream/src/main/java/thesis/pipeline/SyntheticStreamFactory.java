@@ -9,6 +9,7 @@ import moa.core.Example;
 import moa.core.InstanceExample;
 import moa.core.ObjectRepository;
 import moa.options.AbstractOptionHandler;
+import moa.options.OptionHandler;
 import moa.streams.ConceptDriftStream;
 import moa.streams.InstanceStream;
 import moa.streams.generators.HyperplaneGenerator;
@@ -24,33 +25,32 @@ public final class SyntheticStreamFactory {
 
     private SyntheticStreamFactory() {}
 
-
     public static InstanceStream createSEA(int seed, int numInstances) {
-        SEAGenerator g1 = newSEA(seed,     1, 7.0);
-        SEAGenerator g2 = newSEA(seed + 1, 2, 8.0);
-        SEAGenerator g3 = newSEA(seed + 2, 3, 9.0);
-        SEAGenerator g4 = newSEA(seed + 3, 4, 9.5);
+        int p1 = Math.max(1, numInstances / 4);
+        int p2 = Math.max(p1 + 1, numInstances / 2);
+        int p3 = Math.max(p2 + 1, (3 * numInstances) / 4);
 
-        ConceptDriftStream s34 = newDrift(g3, g4, 75_000, 1, seed);
-        ConceptDriftStream s234 = newDrift(g2, s34, 50_000, 1, seed + 10);
-        ConceptDriftStream s1234 = newDrift(g1, s234, 25_000, 1, seed + 20);
+        SEAGenerator g1 = newSEA(seed,     1);
+        SEAGenerator g2 = newSEA(seed + 1, 2);
+        SEAGenerator g3 = newSEA(seed + 2, 3);
+        SEAGenerator g4 = newSEA(seed + 3, 4);
+
+        ConceptDriftStream s34   = newDrift(g3, g4, p3, 1, seed);
+        ConceptDriftStream s234  = newDrift(g2, s34, p2, 1, seed + 10);
+        ConceptDriftStream s1234 = newDrift(g1, s234, p1, 1, seed + 20);
         s1234.prepareForUse();
-        return s1234;
+        return limit(s1234, numInstances);
     }
 
-    private static SEAGenerator newSEA(int seed, int function, double threshold) {
+    private static SEAGenerator newSEA(int seed, int function) {
         SEAGenerator g = new SEAGenerator();
         g.instanceRandomSeedOption.setValue(seed);
         g.functionOption.setValue(function);
-        try {
-            g.getOptions().getOption('t').setValueViaCLIString(String.valueOf(threshold));
-        } catch (Exception ignored) { }
         g.balanceClassesOption.setValue(false);
         g.noisePercentageOption.setValue(10);
         g.prepareForUse();
         return g;
     }
-
 
     public static InstanceStream createHyperplane(int seed, double sigma, int numInstances) {
         HyperplaneGenerator g = new HyperplaneGenerator();
@@ -61,9 +61,8 @@ public final class SyntheticStreamFactory {
         g.noisePercentageOption.setValue(5);
         g.sigmaPercentageOption.setValue(10);
         g.prepareForUse();
-        return g;
+        return limit(g, numInstances);
     }
-
 
     public static InstanceStream createRandomRBF(int seed, double speed, int numInstances) {
         RandomRBFGeneratorDrift g = new RandomRBFGeneratorDrift();
@@ -75,21 +74,24 @@ public final class SyntheticStreamFactory {
         g.speedChangeOption.setValue(speed);
         g.numClassesOption.setValue(2);
         g.prepareForUse();
-        return g;
+        return limit(g, numInstances);
     }
 
-
     public static InstanceStream createSTAGGER(int seed, int numInstances) {
-        STAGGERGenerator s1 = newStagger(seed,     1);
-        STAGGERGenerator s2 = newStagger(seed + 1, 2);
-        STAGGERGenerator s3 = newStagger(seed + 2, 3);
+        int p1 = Math.max(1, numInstances / 5);
+        int p2 = Math.max(p1 + 1, (2 * numInstances) / 5);
+        int p3 = Math.max(p2 + 1, (3 * numInstances) / 5);
+
+        STAGGERGenerator s1  = newStagger(seed,     1);
+        STAGGERGenerator s2  = newStagger(seed + 1, 2);
+        STAGGERGenerator s3  = newStagger(seed + 2, 3);
         STAGGERGenerator s1b = newStagger(seed + 3, 1);
 
-        ConceptDriftStream d3 = newDrift(s3, s1b, 60_000, 1, seed + 30);
-        ConceptDriftStream d2 = newDrift(s2, d3,  40_000, 1, seed + 40);
-        ConceptDriftStream d1 = newDrift(s1, d2,  20_000, 1, seed + 50);
+        ConceptDriftStream d3 = newDrift(s3, s1b, p3, 1, seed + 30);
+        ConceptDriftStream d2 = newDrift(s2, d3,  p2, 1, seed + 40);
+        ConceptDriftStream d1 = newDrift(s1, d2,  p1, 1, seed + 50);
         d1.prepareForUse();
-        return d1;
+        return limit(d1, numInstances);
     }
 
     private static STAGGERGenerator newStagger(int seed, int function) {
@@ -99,7 +101,6 @@ public final class SyntheticStreamFactory {
         s.prepareForUse();
         return s;
     }
-
 
     public static InstanceStream createCustomFeatureDrift(int seed,
                                                           int numDriftFeatures,
@@ -116,15 +117,25 @@ public final class SyntheticStreamFactory {
         g.noisePercentageOption.setValue(5);
         g.sigmaPercentageOption.setValue(10);
         g.prepareForUse();
-        return g;
+        return limit(g, numInstances);
     }
 
+    public static InstanceStream addNoiseFeatures(InstanceStream stream, int nNoise, int seed) {
+        if (nNoise < 0 || nNoise > 1000) {
+            throw new IllegalArgumentException("nNoise must be in [0, 1000]");
+        }
+        if (nNoise == 0) return stream;
+        return new NoiseAugmentedStream(stream, nNoise, seed);
+    }
 
     public static InstanceStream addNoiseFeatures(InstanceStream stream, int nNoise) {
-        if (nNoise <= 0) return stream;
-        return new NoiseAugmentedStream(stream, nNoise);
+        return addNoiseFeatures(stream, nNoise, 42);
     }
 
+    private static InstanceStream limit(InstanceStream s, int numInstances) {
+        if (numInstances <= 0) return s;
+        return new LimitedStream(s, numInstances);
+    }
 
     private static ConceptDriftStream newDrift(InstanceStream a, InstanceStream b,
                                                int position, int width, int seed) {
@@ -132,25 +143,77 @@ public final class SyntheticStreamFactory {
         d.streamOption.setCurrentObject(a);
         d.driftstreamOption.setCurrentObject(b);
         d.positionOption.setValue(position);
-        d.widthOption.setValue(width);
+        d.widthOption.setValue(Math.max(1, width));
         d.randomSeedOption.setValue(seed);
         return d;
     }
 
+    private static final class LimitedStream extends AbstractOptionHandler
+            implements InstanceStream {
+
+        private final InstanceStream base;
+        private final long limit;
+        private long emitted;
+
+        LimitedStream(InstanceStream base, long limit) {
+            this.base = base;
+            this.limit = limit;
+            this.emitted = 0;
+        }
+
+        @Override public InstancesHeader getHeader()        { return base.getHeader(); }
+        @Override public boolean isRestartable()             { return base.isRestartable(); }
+
+        @Override
+        public long estimatedRemainingInstances() {
+            long rem = limit - emitted;
+            long baseRem = base.estimatedRemainingInstances();
+            if (baseRem < 0) return rem;
+            return Math.min(rem, baseRem);
+        }
+
+        @Override
+        public boolean hasMoreInstances() {
+            return emitted < limit && base.hasMoreInstances();
+        }
+
+        @Override
+        public Example<Instance> nextInstance() {
+            emitted++;
+            return base.nextInstance();
+        }
+
+        @Override
+        public void restart() {
+            base.restart();
+            emitted = 0;
+        }
+
+        @Override public void getDescription(StringBuilder sb, int indent) { sb.append("LimitedStream"); }
+
+        @Override
+        protected void prepareForUseImpl(TaskMonitor m, ObjectRepository r) {
+            if (base instanceof OptionHandler) {
+                ((OptionHandler) base).prepareForUse();
+            }
+        }
+    }
 
     private static final class NoiseAugmentedStream extends AbstractOptionHandler
             implements InstanceStream {
 
         private final InstanceStream base;
         private final int nNoise;
-        private final Random rng;
+        private final int seed;
+        private Random rng;
         private InstancesHeader augmentedHeader;
         private int newClassIndex;
 
-        NoiseAugmentedStream(InstanceStream base, int nNoise) {
+        NoiseAugmentedStream(InstanceStream base, int nNoise, int seed) {
             this.base = base;
             this.nNoise = nNoise;
-            this.rng = new Random(42);
+            this.seed = seed;
+            this.rng = new Random(seed);
             buildHeader();
         }
 
@@ -179,7 +242,12 @@ public final class SyntheticStreamFactory {
         @Override public long estimatedRemainingInstances()  { return base.estimatedRemainingInstances(); }
         @Override public boolean hasMoreInstances()          { return base.hasMoreInstances(); }
         @Override public boolean isRestartable()             { return base.isRestartable(); }
-        @Override public void restart()                      { base.restart(); }
+
+        @Override
+        public void restart() {
+            base.restart();
+            this.rng = new Random(seed);
+        }
 
         @Override
         public Example<Instance> nextInstance() {
@@ -202,6 +270,12 @@ public final class SyntheticStreamFactory {
         }
 
         @Override public void getDescription(StringBuilder sb, int indent) { sb.append("NoiseAugmentedStream"); }
-        @Override protected void prepareForUseImpl(TaskMonitor m, ObjectRepository r) { /* no-op */ }
+
+        @Override
+        protected void prepareForUseImpl(TaskMonitor m, ObjectRepository r) {
+            if (base instanceof OptionHandler) {
+                ((OptionHandler) base).prepareForUse();
+            }
+        }
     }
 }

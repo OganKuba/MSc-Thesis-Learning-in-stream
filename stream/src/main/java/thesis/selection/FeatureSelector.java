@@ -4,6 +4,11 @@ import java.util.Set;
 
 public interface FeatureSelector {
 
+    @FunctionalInterface
+    interface RankerFactory {
+        FilterRanker create(int numFeatures, int numBins, int numClasses);
+    }
+
     void initialize(double[][] initialWindow, int[] labels);
 
     void update(double[] instance, int classLabel,
@@ -20,6 +25,8 @@ public interface FeatureSelector {
     int getK();
 
     boolean isInitialized();
+
+    default double[] getInitialScores() { return null; }
 
     default String name() { return getClass().getSimpleName(); }
 }

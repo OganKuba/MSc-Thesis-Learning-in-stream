@@ -1,0 +1,44 @@
+{
+  "experiment_group": "E3",
+  "output_dir": "results/E3",
+
+  "warmup": 1500,
+  "window_size": 1000,
+  "log_every": 1000,
+  "ram_sample_every": 200,
+  "importance_update_every": 1000,
+  "max_instances": 100000,
+  "detector_delta": 0.002,
+  "skip_missing_arff": true,
+
+  "seeds": [1, 2, 3, 4, 5],
+
+  "variants": [
+    { "name": "SRP+S1",      "mode": "BASELINE_SRP_S1" },
+    { "name": "ARF+S2",      "mode": "BASELINE_ARF_S2", "detector": "ADWIN", "w_post_drift": 1000 },
+
+    { "name": "DA-SRP-A",    "mode": "DASRP_A",   "tau": 0.5,                "detector": "ADWIN", "kswin_alpha": 0.005, "kswin_window": 200 },
+    { "name": "DA-SRP-AB",   "mode": "DASRP_AB",  "tau": 0.5, "w1": 0.7,     "detector": "ADWIN", "kswin_alpha": 0.005, "kswin_window": 200 },
+    { "name": "DA-SRP-ABC",  "mode": "DASRP_ABC", "tau": 0.5, "w1": 0.7,     "detector": "ADWIN", "kswin_alpha": 0.005, "kswin_window": 200 }
+  ],
+
+  "sensitivity_grid": {
+    "base_mode": "DASRP_ABC",
+    "base_name": "DA-SRP-ABC-grid",
+    "w1": [0.5, 0.6, 0.7, 0.8, 0.9],
+    "kswin_alpha": [0.005, 0.01, 0.05],
+    "kswin_window": [100, 300, 500]
+  },
+
+  "datasets": [
+    { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 100000, "noise_features": 5 },
+    { "name": "Hyperplane",   "type": "synthetic", "generator": "Hyperplane",         "n": 100000, "sigma": 0.01, "noise_features": 5 },
+    { "name": "RandomRBF",    "type": "synthetic", "generator": "RandomRBF",          "n": 100000, "speed": 0.001, "noise_features": 5 },
+    { "name": "STAGGER",      "type": "synthetic", "generator": "STAGGER",            "n": 100000, "noise_features": 0 },
+    { "name": "FeatureDrift", "type": "synthetic", "generator": "CustomFeatureDrift", "n": 100000, "drift_features": 5, "sigma": 0.01, "noise_features": 5 },
+
+    { "name": "YahooFinance", "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/yahoo_finance/data/arff/yahoo_finance.arff" },
+    { "name": "NYCTaxi",      "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/nyc_taxi/data/arff/nyc_taxi.arff" },
+    { "name": "NHTS",         "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/data/arff/nhts.arff" }
+  ]
+}

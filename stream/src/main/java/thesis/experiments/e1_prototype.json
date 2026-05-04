@@ -1,0 +1,18 @@
+{
+  "experiment_group": "E1_prototype",
+  "output_dir": "results/E1_prototype",
+  "max_instances": 5000,
+  "warmup": 500,
+  "window_size": 500,
+  "log_every": 500,
+  "ram_sample_every": 200,
+  "skip_missing_arff": true,
+
+  "seeds": [1, 2],
+  "models": ["HT", "ARF", "SRP"],
+
+  "datasets": [
+    { "name": "SEA",          "type": "synthetic", "generator": "SEA",          "n": 6000, "noise_features": 5 },
+    { "name": "YahooFinance", "type": "arff",      "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/yahoo_finance/data/arff/yahoo_finance.arff" }
+  ]
+}

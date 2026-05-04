@@ -1,10 +1,15 @@
 package thesis.detection;
 
+import lombok.Getter;
 import moa.classifiers.core.driftdetection.ADWIN;
+
+import java.util.Locale;
 
 public class ADWINChangeDetector implements DriftDetector {
 
+    @Getter
     private final double delta;
+
     private ADWIN adwin;
     private boolean changeDetected;
 
@@ -23,6 +28,7 @@ public class ADWINChangeDetector implements DriftDetector {
 
     @Override
     public void update(double value) {
+        if (!Double.isFinite(value)) return;
         this.changeDetected = this.adwin.setInput(value);
     }
 
@@ -47,16 +53,12 @@ public class ADWINChangeDetector implements DriftDetector {
         this.changeDetected = false;
     }
 
-    public double getDelta() {
-        return delta;
-    }
-
-    public int getWindowLength() {
-        return (int) adwin.getWidth();
+    public long getWindowLength() {
+        return (long) adwin.getWidth();
     }
 
     @Override
     public String name() {
-        return "ADWIN(delta=" + delta + ")";
+        return String.format(Locale.ROOT, "ADWIN(delta=%.6f)", delta);
     }
 }

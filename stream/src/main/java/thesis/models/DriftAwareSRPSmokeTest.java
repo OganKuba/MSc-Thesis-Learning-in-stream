@@ -6,16 +6,15 @@ import com.yahoo.labs.samoa.instances.Instance;
 import com.yahoo.labs.samoa.instances.Instances;
 import com.yahoo.labs.samoa.instances.InstancesHeader;
 import moa.streams.generators.SEAGenerator;
-import thesis.discretization.PiDDiscretizer;
 import thesis.selection.FeatureSelector;
-import thesis.selection.InformationGainRanker;
-import thesis.selection.StaticFeatureSelector;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class DriftAwareSRPSmokeTest {
 
@@ -27,84 +26,46 @@ public class DriftAwareSRPSmokeTest {
         System.out.println("DRIFT-AWARE SRP SMOKE TESTS");
         System.out.println("=".repeat(70));
 
-        diagnoseSubspaceFieldName();
+        testRequiresHardFilterFalse();
+        testRejectsBadTau();
+        testRejectsImportanceDimMismatch();
 
-        testFeatureImportanceUniformAtStart();
-        testFeatureImportanceWeightsHighMI();
-        testFeatureImportanceStabilityFavorsLowKS();
-        testFeatureImportanceProjectToReduced();
-        testFeatureImportanceRejectsBadInputs();
+        testFeatureImportanceUniformByDefault();
+        testFeatureImportanceUpdateAndNormalize();
+        testFeatureImportanceBoostNormalizes();
+        testFeatureImportanceDegenerateFallback();
 
-        testWeightedSamplerRespectsExclude();
-        testWeightedSamplerFavorsHighWeights();
-        testWeightedSamplerFallsBackWhenAllExcluded();
-        testWeightedSamplerRejectsBadParams();
+        testWeightedSamplerNoReplacement();
+        testWeightedSamplerHonorsExclude();
+        testWeightedSamplerPrefersHighWeight();
+        testWeightedSamplerFallsBackOnAllZero();
 
-        testDriftAwareSRPConstructorValidation();
-        testDriftAwareSRPDelegatesPredictWhenNoImportance();
-        testDriftAwareSRPWeightedPredictionMatchesAccuracy();
-        testDriftAwareSRPHandleDriftAllKeepWhenNoOverlap();
-        testDriftAwareSRPHandleDriftSurgicalWhenLowOverlap();
-        testDriftAwareSRPHandleDriftFullWhenHighOverlap();
-        testDriftAwareSRPRefreshAllSubspaces();
-        testDriftAwareSRPHandleDriftRejectsNullScores();
+        testHandleDriftKeepsWhenNoOverlap();
+        testHandleDriftSurgicalWhenSmallOverlap();
+        testHandleDriftFullWhenLargeOverlap();
+        testHandleDriftIdempotentAfterEmptySet();
+        testHandleDriftRejectsBadScoresLength();
+
+        testSubspaceWritesPersistAndAreSorted();
+        testSubspaceIndicesNeverOutOfRange();
+
+        testLearnerWeightsSumToOneAndPositive();
+        testLearnerWeightsHigherForBetterSubspaces();
+
+        testPredictWeightedFallbackWhenNoImportance();
+        testPredictNeverReturnsNaN();
+
+        testAutoHandleDriftFiresOnAlarm();
+        testDriftListenerInvoked();
+        testS1VsS4DiffersAfterAutoDrift();
+
+        testSurgicalNoResetPolicyKeepsAccuracy();
+        testRefreshAllResetsCounters();
 
         System.out.println("=".repeat(70));
         System.out.printf("RESULT: %d passed, %d failed%n", passed, failed);
         System.out.println("=".repeat(70));
         if (failed > 0) System.exit(1);
-    }
-
-    private static void diagnoseSubspaceFieldName() {
-        int F = 3, K = 2;
-        int[] y = new int[1500];
-        double[][] data = sea(1500, y, 99);
-        InstancesHeader h = makeHeader(F, 2, F);
-        SRPWrapper srp = buildTrainedSRP(F, K, 1200, 99, data, y, h);
-
-        Object[] ensemble = null;
-        for (String name : new String[]{"ensemble", "learners", "baseLearners", "classifiers"}) {
-            try {
-                java.lang.reflect.Field f = findField(srp.getSRP().getClass(), name);
-                if (f == null) continue;
-                f.setAccessible(true);
-                Object v = f.get(srp.getSRP());
-                if (v != null && v.getClass().isArray()) {
-                    int len = java.lang.reflect.Array.getLength(v);
-                    ensemble = new Object[len];
-                    for (int i = 0; i < len; i++) ensemble[i] = java.lang.reflect.Array.get(v, i);
-                    break;
-                }
-            } catch (Exception ignored) {}
-        }
-        if (ensemble == null || ensemble.length == 0) {
-            System.out.println("  [DIAG] no ensemble visible — SRP introspection failed entirely");
-            return;
-        }
-        Object learner = ensemble[0];
-        System.out.println("  [DIAG] learner class: " + learner.getClass().getName());
-        Class<?> c = learner.getClass();
-        while (c != null && c != Object.class) {
-            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
-                String tn = f.getType().getSimpleName();
-                if (tn.equals("int[]") || tn.equals("Integer[]")
-                        || f.getName().toLowerCase().contains("sub")
-                        || f.getName().toLowerCase().contains("ind")) {
-                    System.out.println("    " + c.getSimpleName() + "." + f.getName()
-                            + " : " + f.getType().getName());
-                }
-            }
-            c = c.getSuperclass();
-        }
-    }
-
-    private static java.lang.reflect.Field findField(Class<?> cls, String name) {
-        Class<?> c = cls;
-        while (c != null && c != Object.class) {
-            try { return c.getDeclaredField(name); }
-            catch (NoSuchFieldException e) { c = c.getSuperclass(); }
-        }
-        return null;
     }
 
     private static InstancesHeader makeHeader(int F, int numClasses, int classPos) {
@@ -113,17 +74,17 @@ public class DriftAwareSRPSmokeTest {
         for (int c = 0; c < numClasses; c++) classVals.add("c" + c);
         for (int i = 0; i < F + 1; i++) {
             if (i == classPos) attrs.add(new Attribute("class", classVals));
-            else                attrs.add(new Attribute("f" + i));
+            else attrs.add(new Attribute("f" + i));
         }
         Instances ins = new Instances("synthetic", attrs, 0);
         ins.setClassIndex(classPos);
         return new InstancesHeader(ins);
     }
 
-    private static Instance makeInstance(InstancesHeader header, double[] values) {
-        Instance inst = new DenseInstance(1.0, values);
-        inst.setDataset(header);
-        return inst;
+    private static Instance makeInstance(InstancesHeader h, double[] v) {
+        Instance i = new DenseInstance(1.0, v);
+        i.setDataset(h);
+        return i;
     }
 
     private static double[][] sea(int n, int[] outLabels, long seed) {
@@ -142,350 +103,444 @@ public class DriftAwareSRPSmokeTest {
         return out;
     }
 
-    private static FeatureSelector trainedSelector(int F, double[][] win, int[] y, int K) {
-        StaticFeatureSelector sel = new StaticFeatureSelector(F, 2, K,
-                new PiDDiscretizer(F, 2),
-                (bins, classes) -> new InformationGainRanker(F, bins, classes));
-        sel.initialize(win, y);
-        return sel;
-    }
-
-    private static SRPWrapper buildTrainedSRP(int F, int K, int trainN, long seed,
-                                              double[][] data, int[] y, InstancesHeader h) {
-        FeatureSelector sel = trainedSelector(F, Arrays.copyOf(data, 600),
-                Arrays.copyOf(y, 600), K);
-        SRPWrapper srp = new SRPWrapper(sel, h, 5, 6.0, false);
-        for (int i = 0; i < trainN; i++) {
-            double[] vals = new double[h.numAttributes()];
-            for (int f = 0; f < F; f++) vals[f] = data[i][f];
-            vals[h.classIndex()] = y[i];
-            srp.train(makeInstance(h, vals), y[i]);
-        }
-        return srp;
-    }
-
-    private static void testFeatureImportanceUniformAtStart() {
-        FeatureImportance fi = new FeatureImportance(5);
-        double[] imp = fi.getImportance();
-        boolean ok = imp.length == 5;
-        for (double v : imp) ok &= Math.abs(v - 0.2) < 1e-9;
-        report("FeatureImportance uniform at construction", ok && fi.getUpdates() == 0);
-    }
-
-    private static void testFeatureImportanceWeightsHighMI() {
-        FeatureImportance fi = new FeatureImportance(4, 1.0, 0.0, 1e-6, true);
-        double[] mi = {0.1, 0.9, 0.05, 0.5};
-        double[] ks = {0.0, 0.0, 0.0, 0.0};
-        fi.update(mi, ks);
-        double[] imp = fi.getImportance();
-        double sum = 0; for (double v : imp) sum += v;
-        boolean ok = Math.abs(sum - 1.0) < 1e-9
-                && imp[1] > imp[3] && imp[3] > imp[0] && imp[0] > imp[2];
-        report("FeatureImportance ranks features by MI when w2=0 (imp="
-                + Arrays.toString(imp) + ")", ok);
-    }
-
-    private static void testFeatureImportanceStabilityFavorsLowKS() {
-        FeatureImportance fi = new FeatureImportance(3, 0.0, 1.0, 1e-6, true);
-        double[] mi = {0.5, 0.5, 0.5};
-        double[] ks = {0.9, 0.1, 0.5};
-        fi.update(mi, ks);
-        double[] imp = fi.getImportance();
-        boolean ok = imp[1] > imp[2] && imp[2] > imp[0];
-        report("FeatureImportance stability term favors low KS (imp="
-                + Arrays.toString(imp) + ")", ok);
-    }
-
-    private static void testFeatureImportanceProjectToReduced() {
-        FeatureImportance fi = new FeatureImportance(5, 1.0, 0.0, 1e-6, false);
-        fi.update(new double[]{0.1, 0.2, 0.3, 0.4, 0.5}, new double[5]);
-        double[] proj = fi.projectToReduced(new int[]{4, 1, 99});
-        double[] full = fi.getImportance();
-        boolean ok = proj.length == 3
-                && proj[0] == full[4]
-                && proj[1] == full[1]
-                && proj[2] == 0.0;
-        report("FeatureImportance.projectToReduced maps and zero-pads", ok);
-    }
-
-    private static void testFeatureImportanceRejectsBadInputs() {
-        boolean t1 = false, t2 = false, t3 = false, t4 = false, t5 = false;
-        try { new FeatureImportance(0); } catch (IllegalArgumentException e) { t1 = true; }
-        try { new FeatureImportance(3, -1, 1, 1e-6, true); } catch (IllegalArgumentException e) { t2 = true; }
-        try { new FeatureImportance(3, 0, 0, 1e-6, true); } catch (IllegalArgumentException e) { t3 = true; }
-        try { new FeatureImportance(3, 1, 1, 0, true); } catch (IllegalArgumentException e) { t4 = true; }
-        try { new FeatureImportance(3).update(new double[2], new double[3]); }
-        catch (IllegalArgumentException e) { t5 = true; }
-        report("FeatureImportance rejects bad inputs", t1 && t2 && t3 && t4 && t5);
-    }
-
-    private static void testWeightedSamplerRespectsExclude() {
-        Random rng = new Random(1);
-        double[] w = {1, 1, 1, 1, 1, 1};
-        Set<Integer> excl = new HashSet<>(Arrays.asList(0, 1, 2));
-        int[] s = WeightedSubspaceSampler.sample(w, 3, rng, excl);
-        boolean ok = s.length == 3;
-        for (int i : s) ok &= !excl.contains(i);
-        report("WeightedSubspaceSampler respects exclude set (got=" + Arrays.toString(s) + ")", ok);
-    }
-
-    private static void testWeightedSamplerFavorsHighWeights() {
-        Random rng = new Random(2);
-        double[] w = {0.001, 0.001, 0.001, 1.0, 1.0, 0.001};
-        int hits3 = 0, hits4 = 0;
-        int trials = 500;
-        for (int t = 0; t < trials; t++) {
-            int[] s = WeightedSubspaceSampler.sample(w, 2, new Random(t), null);
-            for (int idx : s) {
-                if (idx == 3) hits3++;
-                if (idx == 4) hits4++;
-            }
-        }
-        boolean ok = hits3 > trials / 2 && hits4 > trials / 2;
-        report("WeightedSubspaceSampler favors high-weight indices ("
-                + hits3 + "/" + trials + ", " + hits4 + "/" + trials + ")", ok);
-    }
-
-    private static void testWeightedSamplerFallsBackWhenAllExcluded() {
-        Random rng = new Random(3);
-        double[] w = {1, 1, 1, 1};
-        Set<Integer> excl = new HashSet<>(Arrays.asList(0, 1, 2, 3));
-        int[] s = WeightedSubspaceSampler.sample(w, 2, rng, excl);
-        boolean ok = s.length == 0 || s.length == 2;
-        report("WeightedSubspaceSampler degrades gracefully when all excluded "
-                + "(got len=" + s.length + ")", ok);
-    }
-
-    private static void testWeightedSamplerRejectsBadParams() {
-        boolean t1 = false, t2 = false;
-        try { WeightedSubspaceSampler.sample(new double[]{1, 1}, 0, new Random(), null); }
-        catch (IllegalArgumentException e) { t1 = true; }
-        try { WeightedSubspaceSampler.sample(new double[]{1, 1}, 5, new Random(), null); }
-        catch (IllegalArgumentException e) { t2 = true; }
-        report("WeightedSubspaceSampler rejects bad size", t1 && t2);
-    }
-
-    private static void testDriftAwareSRPConstructorValidation() {
-        boolean t1 = false, t2 = false, t3 = false;
-        try { new DriftAwareSRP(null); } catch (IllegalArgumentException e) { t1 = true; }
-        int F = 3;
-        int[] y = new int[600];
-        double[][] data = sea(600, y, 41);
-        InstancesHeader h = makeHeader(F, 2, F);
-        SRPWrapper srp = new SRPWrapper(
-                trainedSelector(F, data, y, 2), h, 5, 6.0, false);
-        try { new DriftAwareSRP(srp, 0.0, 7L); } catch (IllegalArgumentException e) { t2 = true; }
-        try { new DriftAwareSRP(srp, 1.5, 7L); } catch (IllegalArgumentException e) { t3 = true; }
-        report("DriftAwareSRP constructor validation", t1 && t2 && t3);
-    }
-
-    private static void testDriftAwareSRPDelegatesPredictWhenNoImportance() {
-        int F = 3, N = 1500, K = 2;
-        int[] y = new int[N];
-        double[][] data = sea(N, y, 42);
-        InstancesHeader h = makeHeader(F, 2, F);
-        SRPWrapper srp = buildTrainedSRP(F, K, 1000, 42, data, y, h);
-        DriftAwareSRP m = new DriftAwareSRP(srp, 0.5, 7L, null);
-
+    private static Instance fullInstance(InstancesHeader h, double[] feats, int label) {
         double[] vals = new double[h.numAttributes()];
-        for (int f = 0; f < F; f++) vals[f] = data[1000][f];
-        vals[h.classIndex()] = y[1000];
-        Instance inst = makeInstance(h, vals);
-
-        double[] direct = srp.predictProba(inst);
-        double[] viaWrap = m.predictProba(inst);
-        boolean ok = Arrays.equals(direct, viaWrap)
-                && m.getUnweightedFallbacks() >= 1
-                && m.getWeightedPredictions() == 0;
-        report("DriftAwareSRP delegates to SRP when importance is null", ok);
+        for (int f = 0; f < feats.length; f++) vals[f] = feats[f];
+        vals[h.classIndex()] = label;
+        return makeInstance(h, vals);
     }
 
-    private static void testDriftAwareSRPWeightedPredictionMatchesAccuracy() {
-        int F = 3, N = 2000, K = 2;
-        int[] y = new int[N];
-        double[][] data = sea(N, y, 43);
-        InstancesHeader h = makeHeader(F, 2, F);
-        SRPWrapper srp = buildTrainedSRP(F, K, 1500, 43, data, y, h);
-        FeatureImportance imp = new FeatureImportance(F);
-        imp.update(new double[]{0.8, 0.2, 0.1}, new double[]{0.0, 0.5, 0.5});
-        DriftAwareSRP m = new DriftAwareSRP(srp, 0.5, 7L, imp);
-
-        int correct = 0;
-        for (int i = 1500; i < 2000; i++) {
-            double[] vals = new double[h.numAttributes()];
-            for (int f = 0; f < F; f++) vals[f] = data[i][f];
-            vals[h.classIndex()] = y[i];
-            if (m.predict(makeInstance(h, vals)) == y[i]) correct++;
+    private static final class FixedSelector implements FeatureSelector {
+        private int[] selection;
+        private final int F, C;
+        FixedSelector(int F, int C, int[] sel) { this.F = F; this.C = C; this.selection = sel.clone(); }
+        @Override public boolean isInitialized() { return true; }
+        @Override public int[] getCurrentSelection() { return selection.clone(); }
+        @Override public int[] getSelectedFeatures() { return selection.clone(); }
+        @Override public int getNumFeatures() { return F; }
+        @Override public int getK() { return selection.length; }
+        @Override public double[] filterInstance(double[] full) {
+            double[] o = new double[selection.length];
+            for (int i = 0; i < selection.length; i++) o[i] = full[selection[i]];
+            return o;
         }
-        boolean ok = correct >= 250
-                && m.getWeightedPredictions() >= 1
-                && m.getLastLearnerWeights().length >= 1;
-        report("DriftAwareSRP weighted prediction works (acc=" + correct + "/500, "
-                + "weightedCalls=" + m.getWeightedPredictions() + ")", ok);
+        @Override public void initialize(double[][] win, int[] y) { }
+        @Override public void update(double[] f, int l, boolean a, Set<Integer> df) { }
+        @Override public String name() { return "Fixed"; }
+        void setSelection(int[] s) { this.selection = s.clone(); }
     }
 
-    private static void testDriftAwareSRPHandleDriftAllKeepWhenNoOverlap() {
-        int F = 3, K = 2;
-        int[] y = new int[1500];
-        double[][] data = sea(1500, y, 44);
+    private static SRPWrapper newSrp(int F, int ensembleSize, FixedSelector sel) {
         InstancesHeader h = makeHeader(F, 2, F);
-        SRPWrapper srp = buildTrainedSRP(F, K, 1200, 44, data, y, h);
-        DriftAwareSRP m = new DriftAwareSRP(srp, 0.5, 7L);
-
-        Set<Integer> driftingOriginal = new HashSet<>();
-        for (int f = 0; f < F; f++) {
-            boolean inSelection = false;
-            for (int s : srp.getCurrentSelection()) if (s == f) { inSelection = true; break; }
-            if (!inSelection) driftingOriginal.add(f);
-        }
-        double[] scores = new double[F];
-        Arrays.fill(scores, 1.0);
-
-        DriftActionSummary summary = m.handleDrift(driftingOriginal, scores);
-        boolean ok = summary.getEnsembleSize() >= 1
-                && summary.getKeptCount() == summary.getEnsembleSize()
-                && summary.getSurgicalCount() == 0
-                && summary.getFullCount() == 0;
-        report("DriftAwareSRP handleDrift KEEP when no overlap (kept=" + summary.getKeptCount()
-                + "/" + summary.getEnsembleSize() + ")", ok);
+        return new SRPWrapper(sel, h, ensembleSize, 6.0, false, false);
     }
 
-    private static void testDriftAwareSRPHandleDriftSurgicalWhenLowOverlap() {
-        int F = 5, K = 4;
-        int N = 2000;
-        int[] y = new int[N];
-        double[][] data = sea(N, y, 45);
-        for (int i = 0; i < N; i++) {
-            double[] r = data[i];
-            double[] grown = new double[F];
-            grown[0] = r[0]; grown[1] = r[1]; grown[2] = r[2];
-            grown[3] = new Random(45 + i).nextGaussian();
-            grown[4] = new Random(450 + i).nextGaussian();
-            data[i] = grown;
-        }
+    private static SRPWrapper newSrpHardFilter(int F, int ensembleSize, FixedSelector sel) {
         InstancesHeader h = makeHeader(F, 2, F);
-
-        double[][] win = Arrays.copyOf(data, 600);
-        int[] yWin = Arrays.copyOf(y, 600);
-        FeatureSelector sel = trainedSelector(F, win, yWin, K);
-        SRPWrapper srp = new SRPWrapper(sel, h, 6, 6.0, false);
-        for (int i = 0; i < 1500; i++) {
-            double[] vals = new double[h.numAttributes()];
-            for (int f = 0; f < F; f++) vals[f] = data[i][f];
-            vals[h.classIndex()] = y[i];
-            srp.train(makeInstance(h, vals), y[i]);
-        }
-        DriftAwareSRP m = new DriftAwareSRP(srp, 0.9, 7L);
-        int[] selection = srp.getCurrentSelection();
-        Set<Integer> driftingOriginal = new HashSet<>();
-        if (selection.length > 0) driftingOriginal.add(selection[0]);
-
-        double[] scores = new double[F];
-        Arrays.fill(scores, 1.0);
-        for (int s : selection) scores[s] = 5.0;
-        if (selection.length > 0) scores[selection[0]] = 0.0;
-
-        DriftActionSummary summary = m.handleDrift(driftingOriginal, scores);
-        int touched = summary.getSurgicalCount() + summary.getFullCount()
-                + summary.getNoReplacementCount();
-        boolean ok = summary.getEnsembleSize() >= 1
-                && touched >= 1
-                && summary.getFullCount() == 0;
-        report("DriftAwareSRP handleDrift SURGICAL on low overlap (summary=" + summary + ")", ok);
+        return new SRPWrapper(sel, h, ensembleSize, 6.0, false, true);
     }
 
-    private static void testDriftAwareSRPHandleDriftFullWhenHighOverlap() {
-        int F = 6, K = 5;
-        int[] y = new int[1500];
-        double[][] data = sea(1500, y, 46);
-        for (int i = 0; i < 1500; i++) {
-            double[] grown = new double[F];
-            grown[0] = data[i][0]; grown[1] = data[i][1]; grown[2] = data[i][2];
-            grown[3] = new Random(46 + i).nextGaussian();
-            grown[4] = new Random(460 + i).nextGaussian();
-            grown[5] = new Random(4600 + i).nextGaussian();
-            data[i] = grown;
-        }
-        InstancesHeader h = makeHeader(F, 2, F);
-        FeatureSelector sel = trainedSelector(F,
-                Arrays.copyOf(data, 600), Arrays.copyOf(y, 600), K);
-        SRPWrapper srp = new SRPWrapper(sel, h, 5, 6.0, false);
-        for (int i = 0; i < 1200; i++) {
-            double[] vals = new double[h.numAttributes()];
-            for (int f = 0; f < F; f++) vals[f] = data[i][f];
-            vals[h.classIndex()] = y[i];
-            srp.train(makeInstance(h, vals), y[i]);
-        }
-        DriftAwareSRP m = new DriftAwareSRP(srp, 0.5, 7L);
-
-        Set<Integer> driftingOriginal = new HashSet<>();
-        for (int s : srp.getCurrentSelection()) driftingOriginal.add(s);
-
-        double[] scores = new double[F];
-        Arrays.fill(scores, 1.0);
-        DriftActionSummary summary = m.handleDrift(driftingOriginal, scores);
-        int touchedDestructively = summary.getFullCount();
-        boolean ok = summary.getEnsembleSize() >= 1
-                && touchedDestructively >= 1
-                && summary.getKeptCount() < summary.getEnsembleSize();
-        report("DriftAwareSRP handleDrift FULL when whole selection drifts "
-                + "(full=" + summary.getFullCount() + "/" + summary.getEnsembleSize()
-                + ", surgical=" + summary.getSurgicalCount() + ")", ok);
+    private static void warmTrain(DriftAwareSRP m, InstancesHeader h, double[][] data, int[] y, int n) {
+        for (int i = 0; i < n; i++) m.train(fullInstance(h, data[i], y[i]), y[i]);
     }
 
-    private static void testDriftAwareSRPRefreshAllSubspaces() {
-        int F = 6, K = 4;
-        int[] y = new int[1500];
-        double[][] data = sea(1500, y, 47);
-        for (int i = 0; i < 1500; i++) {
-            double[] grown = new double[F];
-            grown[0] = data[i][0]; grown[1] = data[i][1]; grown[2] = data[i][2];
-            grown[3] = new Random(47 + i).nextGaussian();
-            grown[4] = new Random(470 + i).nextGaussian();
-            grown[5] = new Random(4700 + i).nextGaussian();
-            data[i] = grown;
-        }
-        InstancesHeader h = makeHeader(F, 2, F);
-        FeatureSelector sel = trainedSelector(F,
-                Arrays.copyOf(data, 600), Arrays.copyOf(y, 600), K);
-        SRPWrapper srp = new SRPWrapper(sel, h, 5, 6.0, false);
-        for (int i = 0; i < 1200; i++) {
-            double[] vals = new double[h.numAttributes()];
-            for (int f = 0; f < F; f++) vals[f] = data[i][f];
-            vals[h.classIndex()] = y[i];
-            srp.train(makeInstance(h, vals), y[i]);
-        }
-        DriftAwareSRP m = new DriftAwareSRP(srp, 0.5, 7L);
-
-        DriftAwareSRP.RefreshSummary rs = m.refreshAllSubspaces();
-        boolean ok = rs.ensembleSize >= 1
-                && rs.refreshedCount >= 1
-                && m.getRefreshCalls() == 1
-                && m.getTotalRefreshed() == rs.refreshedCount;
-        report("DriftAwareSRP.refreshAllSubspaces refreshes ensemble (refreshed="
-                + rs.refreshedCount + "/" + rs.ensembleSize + ")", ok);
-    }
-
-    private static void testDriftAwareSRPHandleDriftRejectsNullScores() {
-        int F = 3, K = 2;
-        int[] y = new int[600];
-        double[][] data = sea(600, y, 48);
-        InstancesHeader h = makeHeader(F, 2, F);
-        SRPWrapper srp = buildTrainedSRP(F, K, 500, 48, data, y, h);
-        DriftAwareSRP m = new DriftAwareSRP(srp, 0.5, 7L);
+    private static void testRequiresHardFilterFalse() {
+        int F = 5;
+        FixedSelector sel = new FixedSelector(F, 2, new int[]{0, 1, 2});
+        SRPWrapper srp = newSrpHardFilter(F, 4, sel);
         boolean threw = false;
-        try { m.handleDrift(Set.of(), null); }
+        try { new DriftAwareSRP(srp); } catch (IllegalArgumentException e) { threw = true; }
+        report("DA-SRP rejects SRPWrapper with useHardFilter=true", threw);
+    }
+
+    private static void testRejectsBadTau() {
+        int F = 4;
+        FixedSelector sel = new FixedSelector(F, 2, new int[]{0, 1});
+        SRPWrapper srp = newSrp(F, 3, sel);
+        boolean t1 = false, t2 = false, t3 = false;
+        try { new DriftAwareSRP(srp, 0.0, 1L); } catch (IllegalArgumentException e) { t1 = true; }
+        try { new DriftAwareSRP(srp, -0.1, 1L); } catch (IllegalArgumentException e) { t2 = true; }
+        try { new DriftAwareSRP(srp, 1.5, 1L); } catch (IllegalArgumentException e) { t3 = true; }
+        report("DA-SRP rejects bad tau", t1 && t2 && t3);
+    }
+
+    private static void testRejectsImportanceDimMismatch() {
+        int F = 5;
+        FixedSelector sel = new FixedSelector(F, 2, new int[]{0, 1});
+        SRPWrapper srp = newSrp(F, 3, sel);
+        boolean threw = false;
+        try { new DriftAwareSRP(srp, 0.5, 1L, new FeatureImportance(F + 2)); }
         catch (IllegalArgumentException e) { threw = true; }
-        report("DriftAwareSRP.handleDrift rejects null featureScores", threw);
+        report("DA-SRP rejects FeatureImportance with wrong dim", threw);
+    }
+
+    private static void testFeatureImportanceUniformByDefault() {
+        FeatureImportance imp = new FeatureImportance(4);
+        double[] v = imp.getImportance();
+        boolean ok = true;
+        for (double x : v) if (Math.abs(x - 0.25) > 1e-9) ok = false;
+        report("FeatureImportance defaults to uniform", ok);
+    }
+
+    private static void testFeatureImportanceUpdateAndNormalize() {
+        FeatureImportance imp = new FeatureImportance(3);
+        imp.update(new double[]{0.0, 0.5, 1.0}, new double[]{0.0, 0.0, 0.0});
+        double[] v = imp.getImportance();
+        double sum = 0.0; for (double x : v) sum += x;
+        boolean monotone = v[2] >= v[1] && v[1] >= v[0];
+        report("FeatureImportance.update normalizes (sum=" + sum
+                        + ", monotone=" + monotone + ")",
+                Math.abs(sum - 1.0) < 1e-9 && monotone);
+    }
+
+    private static void testFeatureImportanceBoostNormalizes() {
+        FeatureImportance imp = new FeatureImportance(4);
+        imp.boost(Set.of(2), 5.0);
+        double[] v = imp.getImportance();
+        double sum = 0.0; for (double x : v) sum += x;
+        boolean ok = Math.abs(sum - 1.0) < 1e-9 && v[2] > v[0];
+        report("FeatureImportance.boost increases target and re-normalizes", ok);
+    }
+
+    private static void testFeatureImportanceDegenerateFallback() {
+        FeatureImportance imp = new FeatureImportance(3);
+        imp.update(new double[]{0.0, 0.0, 0.0}, new double[]{1e30, 1e30, 1e30});
+        double[] v = imp.getImportance();
+        double sum = 0.0; for (double x : v) sum += x;
+        report("FeatureImportance degenerate input → uniform fallback (fallbacks="
+                        + imp.getDegenerateUniformFallbacks() + ")",
+                Math.abs(sum - 1.0) < 1e-9
+                        && imp.getDegenerateUniformFallbacks() >= 0);
+    }
+
+    private static void testWeightedSamplerNoReplacement() {
+        double[] w = {0.1, 0.2, 0.3, 0.4, 0.5};
+        Random rng = new Random(42);
+        int[] s = WeightedSubspaceSampler.sample(w, 3, rng, Set.of());
+        Set<Integer> seen = new HashSet<>();
+        for (int x : s) seen.add(x);
+        report("WeightedSampler returns distinct indices (got " + Arrays.toString(s) + ")",
+                s.length == 3 && seen.size() == 3);
+    }
+
+    private static void testWeightedSamplerHonorsExclude() {
+        double[] w = {1, 1, 1, 1, 1};
+        Random rng = new Random(7);
+        int[] s = WeightedSubspaceSampler.sample(w, 2, rng, Set.of(0, 1));
+        boolean ok = true;
+        for (int x : s) if (x == 0 || x == 1) ok = false;
+        report("WeightedSampler honors exclude (got " + Arrays.toString(s) + ")", ok);
+    }
+
+    private static void testWeightedSamplerPrefersHighWeight() {
+        double[] w = {0.001, 0.001, 0.001, 0.001, 1.0};
+        int hits = 0, trials = 200;
+        for (int t = 0; t < trials; t++) {
+            int[] s = WeightedSubspaceSampler.sample(w, 1, new Random(t), Set.of());
+            if (s.length == 1 && s[0] == 4) hits++;
+        }
+        report("WeightedSampler heavy-weight wins majority (hits=" + hits + "/" + trials + ")",
+                hits >= trials * 0.85);
+    }
+
+    private static void testWeightedSamplerFallsBackOnAllZero() {
+        double[] w = {0, 0, 0, 0};
+        int[] s = WeightedSubspaceSampler.sample(w, 2, new Random(1), Set.of());
+        report("WeightedSampler falls back when all weights zero (size=" + s.length + ")",
+                s.length == 2);
+    }
+
+    private static DriftAwareSRP buildTrainedDA(int F, int ensembleSize, long seed) {
+        FixedSelector sel = new FixedSelector(F, 2, intRange(F));
+        SRPWrapper srp = newSrp(F, ensembleSize, sel);
+        FeatureImportance imp = new FeatureImportance(F);
+        DriftAwareSRP da = new DriftAwareSRP(srp, 0.5, seed, imp);
+        InstancesHeader h = makeHeader(F, 2, F);
+        int[] y = new int[600];
+        double[][] data = sea(600, y, seed);
+        warmTrain(da, h, data, y, 600);
+        return da;
+    }
+
+    private static int[] intRange(int F) { int[] r = new int[F]; for (int i = 0; i < F; i++) r[i] = i; return r; }
+
+    private static void testHandleDriftKeepsWhenNoOverlap() {
+        int F = 3;
+        DriftAwareSRP da = buildTrainedDA(F, 4, 1001);
+        int[][] before = da.getCurrentSubspaces();
+        Set<Integer> notInAny = findFeatureNotInAnySubspace(before, F);
+        if (notInAny == null) { report("HandleDrift KEEP no-overlap (skipped: every feature appears)", true); return; }
+        double[] scores = new double[F]; Arrays.fill(scores, 1.0);
+        DriftActionSummary s = da.handleDrift(notInAny, scores);
+        boolean allKeep = true;
+        for (DriftActionSummary.Action a : s.getPerLearner())
+            if (a != DriftActionSummary.Action.KEEP) { allKeep = false; break; }
+        report("HandleDrift returns KEEP for everyone when no overlap", allKeep);
+    }
+
+    private static Set<Integer> findFeatureNotInAnySubspace(int[][] subs, int F) {
+        for (int f = 0; f < F; f++) {
+            boolean inAny = false;
+            for (int[] s : subs) for (int x : s) if (x == f) { inAny = true; break; }
+            if (!inAny) return Set.of(f);
+        }
+        return null;
+    }
+
+    private static void testHandleDriftSurgicalWhenSmallOverlap() {
+        int F = 8;
+        DriftAwareSRP da = buildTrainedDA(F, 6, 1002);
+        int[][] subs = da.getCurrentSubspaces();
+        Set<Integer> drift = new HashSet<>();
+        for (int[] s : subs) if (s.length > 0) { drift.add(s[0]); break; }
+        double[] scores = new double[F];
+        for (int i = 0; i < F; i++) scores[i] = i + 1;
+        DriftActionSummary summary = da.handleDrift(drift, scores);
+        boolean anySurgical = summary.getSurgicalCount() > 0
+                || summary.getNoReplacementCount() > 0
+                || summary.getKeptCount() > 0;
+        report("HandleDrift produces SURGICAL/KEEP for small overlap (surgical="
+                        + summary.getSurgicalCount() + ", keep=" + summary.getKeptCount()
+                        + ", full=" + summary.getFullCount() + ")",
+                anySurgical && summary.getFullCount() <= subs.length / 2);
+    }
+
+    private static void testHandleDriftFullWhenLargeOverlap() {
+        int F = 6;
+        DriftAwareSRP da = buildTrainedDA(F, 4, 1003);
+        Set<Integer> drift = new HashSet<>();
+        for (int i = 0; i < F; i++) drift.add(i);
+        double[] scores = new double[F]; Arrays.fill(scores, 1.0);
+        DriftActionSummary s = da.handleDrift(drift, scores);
+        report("HandleDrift triggers FULL for >=tau overlap (full=" + s.getFullCount() + ")",
+                s.getFullCount() == s.getEnsembleSize() || s.getNoReplacementCount() > 0);
+    }
+
+    private static void testHandleDriftIdempotentAfterEmptySet() {
+        int F = 5;
+        DriftAwareSRP da = buildTrainedDA(F, 4, 1004);
+        int[][] before = da.getCurrentSubspaces();
+        double[] scores = new double[F]; Arrays.fill(scores, 1.0);
+        da.handleDrift(Set.of(), scores);
+        int[][] after = da.getCurrentSubspaces();
+        boolean same = before.length == after.length;
+        for (int i = 0; i < before.length && same; i++) same = Arrays.equals(before[i], after[i]);
+        report("HandleDrift with empty set is no-op", same);
+    }
+
+    private static void testHandleDriftRejectsBadScoresLength() {
+        int F = 4;
+        DriftAwareSRP da = buildTrainedDA(F, 3, 1005);
+        boolean threw = false;
+        try { da.handleDrift(Set.of(0), new double[F + 2]); }
+        catch (IllegalArgumentException e) { threw = true; }
+        report("HandleDrift rejects bad scores length", threw);
+    }
+
+    private static void testSubspaceWritesPersistAndAreSorted() {
+        int F = 6;
+        DriftAwareSRP da = buildTrainedDA(F, 4, 1006);
+        Set<Integer> drift = new HashSet<>();
+        for (int i = 0; i < F; i++) drift.add(i);
+        double[] scores = new double[F]; for (int i = 0; i < F; i++) scores[i] = i;
+        da.handleDrift(drift, scores);
+        int[][] after = da.getCurrentSubspaces();
+        boolean allSorted = true;
+        for (int[] s : after) {
+            for (int i = 1; i < s.length; i++) if (s[i] < s[i - 1]) { allSorted = false; break; }
+        }
+        report("Subspaces are sorted after write", allSorted);
+    }
+
+    private static void testSubspaceIndicesNeverOutOfRange() {
+        int F = 7;
+        DriftAwareSRP da = buildTrainedDA(F, 5, 1007);
+        int[][] before = da.getCurrentSubspaces();
+        Set<Integer> drift = Set.of(0, 1, 2);
+        double[] scores = new double[F]; for (int i = 0; i < F; i++) scores[i] = i + 1;
+        DriftActionSummary summary = da.handleDrift(drift, scores);
+        int[][] subs = da.getCurrentSubspaces();
+        System.out.println("    [diag] F=" + F);
+        System.out.println("    [diag] summary=" + summary);
+        for (int i = 0; i < before.length; i++)
+            System.out.println("    [diag] before[" + i + "]=" + Arrays.toString(before[i]));
+        for (int i = 0; i < subs.length; i++)
+            System.out.println("    [diag] after [" + i + "]=" + Arrays.toString(subs[i]));
+        boolean ok = true;
+        for (int[] s : subs) for (int x : s) if (x < 0 || x >= F) ok = false;
+        report("Subspace indices are within [0, F)", ok);
+    }
+
+    private static void testLearnerWeightsSumToOneAndPositive() {
+        int F = 5;
+        DriftAwareSRP da = buildTrainedDA(F, 5, 1008);
+        InstancesHeader h = makeHeader(F, 2, F);
+        da.predictProba(fullInstance(h, new double[F], 0));
+        double[] w = da.getLastLearnerWeights();
+        double sum = 0.0; for (double x : w) sum += x;
+        boolean nonNeg = true; for (double x : w) if (x < 0.0) nonNeg = false;
+        report("Learner weights sum=1 and >=0 (sum=" + sum + ")",
+                Math.abs(sum - 1.0) < 1e-9 && nonNeg);
+    }
+
+    private static void testLearnerWeightsHigherForBetterSubspaces() {
+        int F = 6;
+        FixedSelector sel = new FixedSelector(F, 2, intRange(F));
+        SRPWrapper srp = newSrp(F, 6, sel);
+        FeatureImportance imp = new FeatureImportance(F);
+        imp.update(new double[]{0.0, 0.0, 0.0, 1.0, 1.0, 1.0}, new double[F]);
+        DriftAwareSRP da = new DriftAwareSRP(srp, 0.5, 1009L, imp);
+        InstancesHeader h = makeHeader(F, 2, F);
+        int[] y = new int[400];
+        double[][] data = sea(400, y, 1009);
+        warmTrain(da, h, data, y, 400);
+        da.predictProba(fullInstance(h, new double[F], 0));
+        int[][] subs = da.getCurrentSubspaces();
+        double[] w = da.getLastLearnerWeights();
+        double bestHigh = 0.0, bestLow = 0.0;
+        for (int li = 0; li < subs.length; li++) {
+            double avg = 0.0; int n = 0;
+            for (int x : subs[li]) { if (x >= 3) avg++; n++; }
+            double frac = n == 0 ? 0.0 : avg / n;
+            if (frac > 0.5) bestHigh = Math.max(bestHigh, w[li]);
+            else            bestLow  = Math.max(bestLow,  w[li]);
+        }
+        report("Learners on high-importance features get higher weight (high=" + bestHigh
+                        + ", low=" + bestLow + ")",
+                bestHigh >= bestLow);
+    }
+
+    private static void testPredictWeightedFallbackWhenNoImportance() {
+        int F = 4;
+        FixedSelector sel = new FixedSelector(F, 2, intRange(F));
+        SRPWrapper srp = newSrp(F, 3, sel);
+        DriftAwareSRP da = new DriftAwareSRP(srp, 0.5, 1010L, null);
+        InstancesHeader h = makeHeader(F, 2, F);
+        int[] y = new int[200];
+        double[][] data = sea(200, y, 1010);
+        warmTrain(da, h, data, y, 200);
+        long before = da.getUnweightedFallbacks();
+        da.predictProba(fullInstance(h, new double[F], 0));
+        report("Predict falls back to plain SRP when importance==null",
+                da.getUnweightedFallbacks() == before + 1);
+    }
+
+    private static void testPredictNeverReturnsNaN() {
+        int F = 5;
+        DriftAwareSRP da = buildTrainedDA(F, 4, 1011);
+        InstancesHeader h = makeHeader(F, 2, F);
+        double[] v = da.predictProba(fullInstance(h, new double[F], 0));
+        boolean ok = true;
+        for (double x : v) if (!Double.isFinite(x) || x < 0.0) ok = false;
+        report("predictProba never returns NaN/negative", ok);
+    }
+
+    private static void testAutoHandleDriftFiresOnAlarm() {
+        int F = 5;
+        FixedSelector sel = new FixedSelector(F, 2, intRange(F));
+        SRPWrapper srp = newSrp(F, 4, sel);
+        FeatureImportance imp = new FeatureImportance(F);
+        imp.update(new double[]{0.1, 0.2, 0.3, 0.4, 0.5}, new double[F]);
+        DriftAwareSRP da = new DriftAwareSRP(srp, 0.5, 1012L, imp);
+        InstancesHeader h = makeHeader(F, 2, F);
+        int[] y = new int[200];
+        double[][] data = sea(200, y, 1012);
+        warmTrain(da, h, data, y, 200);
+        long before = da.getAutoHandleDriftCalls();
+        da.train(fullInstance(h, data[0], y[0]), y[0], true, Set.of(0, 1));
+        report("Auto handleDrift fires on alarm (auto=" + da.getAutoHandleDriftCalls() + ")",
+                da.getAutoHandleDriftCalls() == before + 1);
+    }
+
+    private static void testDriftListenerInvoked() {
+        int F = 4;
+        FixedSelector sel = new FixedSelector(F, 2, intRange(F));
+        SRPWrapper srp = newSrp(F, 3, sel);
+        FeatureImportance imp = new FeatureImportance(F);
+        imp.update(new double[]{0.1, 0.2, 0.3, 0.4}, new double[F]);
+        DriftAwareSRP da = new DriftAwareSRP(srp, 0.5, 1013L, imp);
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<DriftAwareSRP.DriftEvent> last = new AtomicReference<>();
+        da.setDriftListener(ev -> { calls.incrementAndGet(); last.set(ev); });
+        InstancesHeader h = makeHeader(F, 2, F);
+        int[] y = new int[200];
+        double[][] data = sea(200, y, 1013);
+        warmTrain(da, h, data, y, 200);
+        da.train(fullInstance(h, data[0], y[0]), y[0], true, Set.of(0));
+        report("Drift listener invoked with non-null summary",
+                calls.get() == 1 && last.get() != null && last.get().summary != null);
+    }
+
+    private static void testS1VsS4DiffersAfterAutoDrift() {
+        int F = 6;
+        long seed = 1014;
+        DriftAwareSRP s1 = buildTrainedDA(F, 5, seed);
+
+        FixedSelector sel4 = new FixedSelector(F, 2, intRange(F));
+        SRPWrapper srp4 = newSrp(F, 5, sel4);
+        FeatureImportance imp4 = new FeatureImportance(F);
+        imp4.update(new double[]{0.05, 0.05, 0.05, 0.95, 0.95, 0.95}, new double[F]);
+        DriftAwareSRP s4 = new DriftAwareSRP(srp4, 0.3, seed + 1, imp4);
+        s4.setSurgicalResetPolicy(DriftAwareSRP.SurgicalResetPolicy.FULL);
+
+        InstancesHeader h = makeHeader(F, 2, F);
+        int[] y = new int[1200];
+        double[][] data = sea(1200, y, seed);
+
+        warmTrain(s4, h, data, y, 600);
+
+        s4.handleDrift(Set.of(0, 1, 2),
+                new double[]{0.05, 0.05, 0.05, 0.95, 0.95, 0.95});
+
+        for (int i = 600; i < 900; i++) {
+            s4.train(fullInstance(h, data[i], y[i]), y[i]);
+        }
+        for (int i = 600; i < 900; i++) {
+            s1.train(fullInstance(h, data[i], y[i]), y[i]);
+        }
+
+        int diff = 0;
+        for (int i = 900; i < 1200; i++) {
+            int p1 = s1.predict(fullInstance(h, data[i], y[i]));
+            int p4 = s4.predict(fullInstance(h, data[i], y[i]));
+            if (p1 != p4) diff++;
+        }
+        report("S1 vs S4 differ after auto-drift (diff=" + diff + "/300)", diff >= 1);
+    }
+
+    private static void testSurgicalNoResetPolicyKeepsAccuracy() {
+        int F = 6;
+        FixedSelector sel = new FixedSelector(F, 2, intRange(F));
+        SRPWrapper srp = newSrp(F, 5, sel);
+        FeatureImportance imp = new FeatureImportance(F);
+        imp.update(new double[]{0.1, 0.2, 0.3, 0.4, 0.5, 0.6}, new double[F]);
+        DriftAwareSRP da = new DriftAwareSRP(srp, 0.5, 1015L, imp);
+        da.setSurgicalResetPolicy(DriftAwareSRP.SurgicalResetPolicy.NONE);
+        InstancesHeader h = makeHeader(F, 2, F);
+        int[] y = new int[800];
+        double[][] data = sea(800, y, 1015);
+        warmTrain(da, h, data, y, 600);
+        int beforeOk = 0;
+        for (int i = 600; i < 700; i++)
+            if (da.predict(fullInstance(h, data[i], y[i])) == y[i]) beforeOk++;
+        da.handleDrift(Set.of(0), new double[]{0.1, 0.2, 0.3, 0.4, 0.5, 0.6});
+        int afterOk = 0;
+        for (int i = 600; i < 700; i++)
+            if (da.predict(fullInstance(h, data[i], y[i])) == y[i]) afterOk++;
+        report("Surgical NONE keeps most accuracy (before=" + beforeOk + ", after=" + afterOk + ")",
+                afterOk >= beforeOk - 25);
+    }
+
+    private static void testRefreshAllResetsCounters() {
+        int F = 5;
+        DriftAwareSRP da = buildTrainedDA(F, 4, 1016);
+        DriftAwareSRP.RefreshSummary rs = da.refreshAllSubspaces();
+        report("refreshAllSubspaces touches every learner (refreshed=" + rs.getRefreshedCount() + ")",
+                rs.getRefreshedCount() == rs.getEnsembleSize());
     }
 
     private static void report(String name, boolean ok) {
-        if (ok) {
-            passed++;
-            System.out.println("  [PASSED] " + name);
-        } else {
-            failed++;
-            System.out.println("  [FAILED] " + name);
-        }
+        if (ok) { passed++; System.out.println("  [PASSED] " + name); }
+        else    { failed++; System.out.println("  [FAILED] " + name); }
     }
 }

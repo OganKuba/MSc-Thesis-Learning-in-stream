@@ -1,10 +1,13 @@
 package thesis.evaluation;
 
+import java.util.Locale;
+
 public class MetricsCollector {
 
     private final int numClasses;
     private final int windowSize;
     private final int logEvery;
+    private final int ramSampleEvery;
 
     private final CohenKappa kappa;
     private final TemporalKappa kappaPer;
@@ -18,12 +21,16 @@ public class MetricsCollector {
     private long correctTotal;
     private long driftCount;
 
-    public MetricsCollector(int numClasses) { this(numClasses, 1000, 1000); }
+    public MetricsCollector(int numClasses) { this(numClasses, 1000, 1000, 100); }
 
-    public MetricsCollector(int numClasses, int windowSize, int logEvery) {
+    public MetricsCollector(int numClasses, int windowSize, int logEvery, int ramSampleEvery) {
+        if (numClasses < 2) throw new IllegalArgumentException("numClasses must be >= 2");
+        if (windowSize < 1) throw new IllegalArgumentException("windowSize must be >= 1");
+        if (ramSampleEvery < 1) throw new IllegalArgumentException("ramSampleEvery must be >= 1");
         this.numClasses = numClasses;
         this.windowSize = windowSize;
         this.logEvery = logEvery;
+        this.ramSampleEvery = ramSampleEvery;
         this.kappa = new CohenKappa(numClasses, windowSize);
         this.kappaPer = new TemporalKappa(windowSize);
         this.accuracy = new PrequentialAccuracy(windowSize);
@@ -34,6 +41,7 @@ public class MetricsCollector {
     }
 
     public void update(int yTrue, int yPred, long elapsedNanos) {
+        if (elapsedNanos < 0) elapsedNanos = 0;
         kappa.update(yTrue, yPred);
         kappaPer.update(yTrue, yPred);
         accuracy.update(yTrue, yPred);
@@ -42,7 +50,7 @@ public class MetricsCollector {
         instances++;
         totalUpdateNanos += elapsedNanos;
         if (yTrue == yPred) correctTotal++;
-        if (instances % 100 == 0) ram.sampleFromRuntime();
+        if (instances % ramSampleEvery == 0) ram.sampleFromRuntime();
     }
 
     public void onDriftAlarm() {
@@ -50,8 +58,9 @@ public class MetricsCollector {
         recovery.onDriftAlarm(kappa.getKappa());
     }
 
-    public void onSelectionChanged(int[] currentSelection) {
+    public boolean onSelectionChanged(int[] currentSelection) {
         stability.update(currentSelection);
+        return stability.wasLastChanged();
     }
 
     public boolean shouldLog() {
@@ -59,8 +68,9 @@ public class MetricsCollector {
     }
 
     public String formatLogLine() {
-        return String.format(
-                "[t=%6d] acc=%.4f  κ=%.4f  κ_per=%.4f  drift=%d  recov(last/avg)=%d/%.1f  stab=%.3f  ramH=%.4f  peak=%dMB  avg=%.1fµs",
+        double stab = stability.getAverageRatio();
+        return String.format(Locale.ROOT,
+                "[t=%6d] acc=%.4f  k=%.4f  k_per=%.4f  drift=%d  recov(last/avg)=%d/%.1f  stab=%.3f  ramH(GB)=%.6f  peak=%dMB  avg=%.1fus",
                 instances,
                 accuracy.getAccuracy(),
                 kappa.getKappa(),
@@ -68,7 +78,7 @@ public class MetricsCollector {
                 driftCount,
                 recovery.getLastRecoveryTime(),
                 recovery.getAverageRecoveryTime(),
-                Double.isNaN(stability.getAverageRatio()) ? 0.0 : stability.getAverageRatio(),
+                Double.isNaN(stab) ? 0.0 : stab,
                 ram.getRamHours(),
                 (long) ram.getPeakMB(),
                 instances == 0 ? 0.0 : (totalUpdateNanos / 1000.0) / instances);
@@ -86,8 +96,11 @@ public class MetricsCollector {
         s.avgRecoveryTime = recovery.getAverageRecoveryTime();
         s.recovered = recovery.getRecoveredCount();
         s.unrecovered = recovery.getUnrecoveredCount();
+        s.cancelled = recovery.getCancelledCount();
         s.featureStabilityRatio = stability.getAverageRatio();
-        s.ramHours = ram.getRamHours();
+        s.lastFeatureStabilityRatio = stability.getLastRatio();
+        s.selectionChangeCount = stability.getChangeCount();
+        s.ramHoursGB = ram.getRamHours();
         s.peakMB = ram.getPeakMB();
         s.elapsedHours = ram.getElapsedHours();
         s.avgUpdateMicros = instances == 0 ? 0.0 : (totalUpdateNanos / 1000.0) / instances;
@@ -116,8 +129,11 @@ public class MetricsCollector {
         public double avgRecoveryTime;
         public int recovered;
         public int unrecovered;
+        public int cancelled;
         public double featureStabilityRatio;
-        public double ramHours;
+        public double lastFeatureStabilityRatio;
+        public long selectionChangeCount;
+        public double ramHoursGB;
         public double peakMB;
         public double elapsedHours;
         public double avgUpdateMicros;

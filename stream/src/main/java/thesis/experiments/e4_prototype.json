@@ -1,0 +1,33 @@
+{
+  "experiment_group": "E4_prototype",
+  "output_dir": "results/E4_prototype",
+
+  "warmup": 1000,
+  "window_size": 500,
+  "log_every": 500,
+  "ram_sample_every": 200,
+  "importance_update_every": 500,
+  "tolerance_window": 500,
+  "max_instances": 20000,
+  "detector_delta": 0.002,
+  "f1_threshold": 0.5,
+  "kappa_threshold": 0.5,
+  "method_periodic_interval": 500,
+  "method_w_post_drift": 300,
+
+  "seeds": [1],
+
+  "magnitudes": ["LOW", "HIGH"],
+
+  "methods": [
+    "HT+S1",
+    "ARF+S1", "ARF+S2", "ARF+S3",
+    "SRP+S1", "SRP+S2", "SRP+S3",
+    "DA-SRP-A", "DA-SRP-AB", "DA-SRP-ABC"
+  ],
+
+  "generators": [
+    { "name": "SEA",                "n": 20000, "noise_features": 0 },
+    { "name": "CustomFeatureDrift", "n": 20000, "noise_features": 5, "drift_features": 5 }
+  ]
+}

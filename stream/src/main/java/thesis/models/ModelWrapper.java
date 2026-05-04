@@ -22,5 +22,5 @@ public interface ModelWrapper {
 
     void reset();
 
-    String name();
+    default String name() { return getClass().getSimpleName(); }
 }

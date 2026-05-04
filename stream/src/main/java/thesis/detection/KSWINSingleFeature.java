@@ -3,9 +3,7 @@ package thesis.detection;
 import lombok.Getter;
 import org.apache.commons.math3.stat.inference.KolmogorovSmirnovTest;
 
-import java.util.ArrayDeque;
 import java.util.Arrays;
-import java.util.Deque;
 
 @Getter
 public class KSWINSingleFeature {
@@ -15,7 +13,10 @@ public class KSWINSingleFeature {
     private final KolmogorovSmirnovTest ks;
 
     private double[] reference;
-    private final Deque<Double> current;
+    private final double[] current;
+    private int currentSize;
+    private int currentHead;
+    private final double[] currentScratch;
 
     private double lastPValue;
     private double lastKsStatistic;
@@ -32,36 +33,47 @@ public class KSWINSingleFeature {
         this.alpha = alpha;
         this.ks = new KolmogorovSmirnovTest();
         this.reference = null;
-        this.current = new ArrayDeque<>(windowSize);
+        this.current = new double[windowSize];
+        this.currentScratch = new double[windowSize];
+        this.currentSize = 0;
+        this.currentHead = 0;
         this.lastPValue = 1.0;
         this.lastKsStatistic = 0.0;
         this.lastDrift = false;
     }
 
     public void update(double value) {
+        if (!Double.isFinite(value)) return;
         if (reference == null) {
-            current.addLast(value);
-            if (current.size() == windowSize) {
-                reference = drainToArray();
+            current[currentSize++] = value;
+            if (currentSize == windowSize) {
+                reference = Arrays.copyOf(current, windowSize);
+                currentSize = 0;
+                currentHead = 0;
             }
             return;
         }
-        if (current.size() == windowSize) {
-            current.removeFirst();
+        if (currentSize < windowSize) {
+            current[(currentHead + currentSize) % windowSize] = value;
+            currentSize++;
+        } else {
+            current[currentHead] = value;
+            currentHead = (currentHead + 1) % windowSize;
         }
-        current.addLast(value);
     }
 
     public boolean testDrift() {
-        if (reference == null || current.size() < windowSize) {
+        if (reference == null || currentSize < windowSize) {
             lastPValue = 1.0;
             lastKsStatistic = 0.0;
             lastDrift = false;
             return false;
         }
-        double[] cur = toArray(current);
-        lastKsStatistic = ks.kolmogorovSmirnovStatistic(reference, cur);
-        lastPValue = ks.kolmogorovSmirnovTest(reference, cur);
+        for (int i = 0; i < windowSize; i++) {
+            currentScratch[i] = current[(currentHead + i) % windowSize];
+        }
+        lastKsStatistic = ks.kolmogorovSmirnovStatistic(reference, currentScratch);
+        lastPValue = ks.kolmogorovSmirnovTest(reference, currentScratch);
         lastDrift = lastPValue < alpha;
         return lastDrift;
     }
@@ -69,7 +81,7 @@ public class KSWINSingleFeature {
     public double getPValue()      { return lastPValue; }
     public double getKSStatistic() { return lastKsStatistic; }
     public boolean isDrift()       { return lastDrift; }
-    public boolean isReady()       { return reference != null && current.size() == windowSize; }
+    public boolean isReady()       { return reference != null && currentSize == windowSize; }
 
     public void setReferenceWindow(double[] ref) {
         if (ref == null || ref.length != windowSize) {
@@ -77,18 +89,24 @@ public class KSWINSingleFeature {
                     "reference must have length windowSize=" + windowSize);
         }
         this.reference = Arrays.copyOf(ref, ref.length);
-        this.current.clear();
+        this.currentSize = 0;
+        this.currentHead = 0;
         this.lastPValue = 1.0;
         this.lastKsStatistic = 0.0;
         this.lastDrift = false;
     }
 
     public void promoteCurrentToReference() {
-        if (current.size() != windowSize) {
+        if (currentSize != windowSize) {
             throw new IllegalStateException("current window not full yet");
         }
-        this.reference = toArray(current);
-        this.current.clear();
+        double[] newRef = new double[windowSize];
+        for (int i = 0; i < windowSize; i++) {
+            newRef[i] = current[(currentHead + i) % windowSize];
+        }
+        this.reference = newRef;
+        this.currentSize = 0;
+        this.currentHead = 0;
         this.lastPValue = 1.0;
         this.lastKsStatistic = 0.0;
         this.lastDrift = false;
@@ -96,22 +114,10 @@ public class KSWINSingleFeature {
 
     public void reset() {
         this.reference = null;
-        this.current.clear();
+        this.currentSize = 0;
+        this.currentHead = 0;
         this.lastPValue = 1.0;
         this.lastKsStatistic = 0.0;
         this.lastDrift = false;
-    }
-
-    private double[] drainToArray() {
-        double[] out = toArray(current);
-        current.clear();
-        return out;
-    }
-
-    private static double[] toArray(Deque<Double> dq) {
-        double[] out = new double[dq.size()];
-        int i = 0;
-        for (Double v : dq) out[i++] = v;
-        return out;
     }
 }

@@ -5,7 +5,6 @@ import lombok.Getter;
 import java.util.Collections;
 import java.util.Set;
 
-@Getter
 public class TwoLevelDriftDetector {
 
     public enum Level1Type { ADWIN, HDDM_A, HDDM_W }
@@ -16,9 +15,10 @@ public class TwoLevelDriftDetector {
         public double level1AlphaW = 0.01;
         public double level1Lambda = 0.05;
         public int numFeatures;
-        public double kswinAlpha = 0.01;
-        public int kswinWindowSize = 300;
-        public double bhQ = 0.05;
+        public double kswinAlpha = 0.005;
+        public int kswinWindowSize = 200;
+        public double bhQ = 0.10;
+        public int postDriftCooldown = 0;
         public boolean promoteReferenceOnDrift = true;
 
         public Config(int numFeatures) {
@@ -26,102 +26,144 @@ public class TwoLevelDriftDetector {
         }
     }
 
-    private final Config cfg;
+    private enum Phase { COLLECT_REF, MONITOR, COLLECT_POST }
+
+    @Getter private final Config config;
     private final DriftDetector level1;
+    private final FeatureBuffers buffers;
     private final PerFeatureKSWIN level2;
 
-    private boolean lastGlobalDrift;
-    private boolean lastGlobalWarning;
-    private Set<Integer> lastDriftingFeatures;
-    private long updates;
-    private long globalAlarms;
+    private Phase phase;
+    private int postCount;
+    private int cooldownLeft;
+
+    @Getter private boolean lastGlobalDrift;
+    @Getter private boolean lastGlobalWarning;
+    @Getter private Set<Integer> lastDriftingFeatures = Collections.emptySet();
+    @Getter private double[] lastPValues;
+    @Getter private long updateCount;
+    @Getter private long globalAlarms;
+    @Getter private long localizedAlarms;
 
     public TwoLevelDriftDetector(Config cfg) {
-        if (cfg == null) {
-            throw new IllegalArgumentException("cfg must not be null");
-        }
-        if (cfg.numFeatures < 1) {
-            throw new IllegalArgumentException("numFeatures must be >= 1");
-        }
-        this.cfg = cfg;
+        if (cfg == null) throw new IllegalArgumentException("cfg must not be null");
+        if (cfg.numFeatures < 1) throw new IllegalArgumentException("numFeatures must be >= 1");
+        if (!(cfg.kswinAlpha > 0.0 && cfg.kswinAlpha < 1.0))
+            throw new IllegalArgumentException("kswinAlpha must be in (0,1)");
+        if (!(cfg.bhQ > 0.0 && cfg.bhQ < 1.0))
+            throw new IllegalArgumentException("bhQ must be in (0,1)");
+        if (cfg.kswinWindowSize < 10)
+            throw new IllegalArgumentException("kswinWindowSize must be >= 10");
+        if (cfg.postDriftCooldown < 0)
+            throw new IllegalArgumentException("postDriftCooldown must be >= 0");
+
+        this.config = cfg;
         this.level1 = buildLevel1(cfg);
+        this.buffers = new FeatureBuffers(cfg.numFeatures, cfg.kswinWindowSize);
         this.level2 = new PerFeatureKSWIN(cfg.numFeatures, cfg.kswinAlpha,
                 cfg.kswinWindowSize, cfg.bhQ);
-        this.lastGlobalDrift = false;
-        this.lastGlobalWarning = false;
-        this.lastDriftingFeatures = Collections.emptySet();
-        this.updates = 0;
-        this.globalAlarms = 0;
+        this.lastPValues = new double[cfg.numFeatures];
+        java.util.Arrays.fill(this.lastPValues, 1.0);
+        this.phase = Phase.COLLECT_REF;
+        this.postCount = 0;
+        this.cooldownLeft = 0;
     }
 
     private static DriftDetector buildLevel1(Config cfg) {
         switch (cfg.level1Type) {
             case ADWIN:  return new ADWINChangeDetector(cfg.level1Delta);
             case HDDM_A: return HDDMChangeDetector.ofA(cfg.level1Delta, cfg.level1AlphaW);
-            case HDDM_W: return HDDMChangeDetector.ofW(cfg.level1Delta, cfg.level1AlphaW,
-                    cfg.level1Lambda);
+            case HDDM_W: return HDDMChangeDetector.ofW(cfg.level1Delta, cfg.level1AlphaW, cfg.level1Lambda);
             default: throw new IllegalStateException("unknown Level1Type: " + cfg.level1Type);
         }
     }
 
     public void update(double predictionError, double[] featureValues) {
-        if (featureValues == null || featureValues.length != cfg.numFeatures) {
+        if (featureValues == null || featureValues.length != config.numFeatures) {
             throw new IllegalArgumentException(
-                    "expected " + cfg.numFeatures + " features, got " +
+                    "expected " + config.numFeatures + " features, got " +
                             (featureValues == null ? "null" : featureValues.length));
         }
-        updates++;
+        updateCount++;
 
-        level2.update(featureValues);
-        level1.update(predictionError);
+        buffers.pushRolling(featureValues);
 
-        lastGlobalWarning = level1.isWarningDetected();
-        lastGlobalDrift = level1.isChangeDetected();
+        lastGlobalDrift = false;
+        lastGlobalWarning = false;
+        lastDriftingFeatures = Collections.emptySet();
 
-        if (lastGlobalDrift) {
-            globalAlarms++;
-            lastDriftingFeatures = level2.getDriftingFeatures();
-            if (cfg.promoteReferenceOnDrift && level2.isReady()) {
-                for (int idx : lastDriftingFeatures) {
-                    level2.resetFeature(idx);
+        if (cooldownLeft > 0) {
+            cooldownLeft--;
+            level1.update(predictionError);
+            return;
+        }
+
+        if (phase == Phase.COLLECT_POST) {
+            buffers.pushPost(featureValues);
+            postCount++;
+            if (postCount >= config.kswinWindowSize) {
+                runLevel2Localization();
+                phase = Phase.MONITOR;
+                postCount = 0;
+                cooldownLeft = config.postDriftCooldown;
+                if (lastDriftingFeatures != null && !lastDriftingFeatures.isEmpty()) {
+                    lastGlobalDrift = true;
+                    globalAlarms++;
                 }
             }
-        } else {
-            lastDriftingFeatures = Collections.emptySet();
+            level1.update(predictionError);
+            return;
+        }
+
+
+        level1.update(predictionError);
+        lastGlobalWarning = level1.isWarningDetected();
+
+        if (level1.isChangeDetected()) {
+            globalAlarms++;
+            lastGlobalDrift = true;
+            buffers.snapshotReferenceFromRolling();
+            buffers.clearPost();
+            postCount = 0;
+            phase = Phase.COLLECT_POST;
+            level1.reset();
+        } else if (phase == Phase.COLLECT_REF && buffers.isRollingFull()) {
+            phase = Phase.MONITOR;
+        }
+    }
+
+    private void runLevel2Localization() {
+        double[][] ref = buffers.getReference();
+        double[][] post = buffers.getPost();
+        if (ref == null) return;
+        Set<Integer> drifting = level2.testWindows(ref, post);
+        double[] p = level2.getLastPValues();
+        System.arraycopy(p, 0, lastPValues, 0, p.length);
+        lastDriftingFeatures = drifting;
+        if (!drifting.isEmpty()) localizedAlarms++;
+        if (config.promoteReferenceOnDrift) {
+            buffers.promotePostToReference();
         }
     }
 
     public boolean isGlobalDriftDetected()   { return lastGlobalDrift; }
     public boolean isGlobalWarningDetected() { return lastGlobalWarning; }
-
-    public Set<Integer> getDriftingFeatureIndices() {
-        return lastDriftingFeatures;
-    }
-
-    public double[] getLastPValues() {
-        return level2.getLastPValues();
-    }
-
-    public double getLevel1Estimation() {
-        return level1.getEstimation();
-    }
-
-    public boolean isLevel2Ready() {
-        return level2.isReady();
-    }
-
-    public long getUpdateCount()  { return updates; }
-
-    public Config getConfig()     { return cfg; }
-    public String level1Name()    { return level1.name(); }
+    public Set<Integer> getDriftingFeatureIndices() { return lastDriftingFeatures; }
+    public double getLevel1Estimation() { return level1.getEstimation(); }
+    public String level1Name() { return level1.name(); }
 
     public void reset() {
         level1.reset();
-        level2.resetAll();
+        buffers.reset();
+        java.util.Arrays.fill(lastPValues, 1.0);
         lastGlobalDrift = false;
         lastGlobalWarning = false;
         lastDriftingFeatures = Collections.emptySet();
-        updates = 0;
+        updateCount = 0;
         globalAlarms = 0;
+        localizedAlarms = 0;
+        phase = Phase.COLLECT_REF;
+        postCount = 0;
+        cooldownLeft = 0;
     }
 }

@@ -9,31 +9,37 @@ import thesis.selection.FeatureSelector;
 import java.util.Arrays;
 import java.util.Set;
 
-@Getter
 public class ARFWrapper implements ModelWrapper {
 
-    private final FeatureSelector selector;
+    @Getter private final FeatureSelector selector;
     private final FeatureSpace space;
-    private final int ensembleSize;
-    private final double lambda;
-    private final boolean resetOnSelectionChange;
+    @Getter private final int ensembleSize;
+    @Getter private final double lambda;
+    @Getter private final boolean resetOnSelectionChange;
+    @Getter private final boolean useHardFilter;
 
     private AdaptiveRandomForest arf;
     private InstancesHeader reducedHeader;
     private int[] cachedSelection;
 
+    private static final boolean DIAG = Boolean.getBoolean("thesis.diag");
+
     public ARFWrapper(FeatureSelector selector, InstancesHeader fullHeader) {
-        this(selector, fullHeader, 10, 6.0, false);
+        this(selector, fullHeader, 10, 6.0, false, true);
+    }
+
+    public ARFWrapper(FeatureSelector selector, InstancesHeader fullHeader,
+                      int ensembleSize, double lambda, boolean resetOnSelectionChange) {
+        this(selector, fullHeader, ensembleSize, lambda, resetOnSelectionChange, true);
     }
 
     public ARFWrapper(FeatureSelector selector, InstancesHeader fullHeader,
                       int ensembleSize, double lambda,
-                      boolean resetOnSelectionChange) {
+                      boolean resetOnSelectionChange, boolean useHardFilter) {
         if (selector == null) throw new IllegalArgumentException("selector must not be null");
         if (fullHeader == null) throw new IllegalArgumentException("fullHeader must not be null");
-        if (!selector.isInitialized()) {
+        if (!selector.isInitialized())
             throw new IllegalArgumentException("selector must be initialized before wrapping");
-        }
         if (ensembleSize < 1) throw new IllegalArgumentException("ensembleSize must be >= 1");
         if (lambda <= 0.0) throw new IllegalArgumentException("lambda must be > 0");
         this.selector = selector;
@@ -41,6 +47,10 @@ public class ARFWrapper implements ModelWrapper {
         this.ensembleSize = ensembleSize;
         this.lambda = lambda;
         this.resetOnSelectionChange = resetOnSelectionChange;
+        this.useHardFilter = useHardFilter;
+        if (!useHardFilter && DIAG) {
+            System.err.println("[ARFWrapper][WARN] useHardFilter=false → ARF sees FULL d features.");
+        }
         rebuild();
     }
 
@@ -49,73 +59,72 @@ public class ARFWrapper implements ModelWrapper {
         a.ensembleSizeOption.setValue(ensembleSize);
         try {
             a.getOptions().getOption('a').setValueViaCLIString(String.valueOf(lambda));
-        } catch (Exception ignored) { }
+        } catch (Exception e) {
+            throw new IllegalStateException("ARF option 'a' (lambda) not available", e);
+        }
         a.prepareForUse();
         return a;
     }
 
     private void rebuild() {
-        cachedSelection = selector.getCurrentSelection();
-        reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_arf");
+        cachedSelection = selector.getCurrentSelection().clone();
         arf = newARF();
+        reducedHeader = useHardFilter
+                ? FilteredHeaderBuilder.build(space, cachedSelection, "_arf")
+                : space.getHeader();
         arf.setModelContext(reducedHeader);
     }
 
     private void syncSelection() {
         int[] curr = selector.getCurrentSelection();
         if (Arrays.equals(curr, cachedSelection)) return;
-        cachedSelection = curr;
-        reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_arf");
-        if (resetOnSelectionChange) {
-            arf = newARF();
+        cachedSelection = curr.clone();
+        if (useHardFilter) {
+            reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_arf");
+            if (resetOnSelectionChange) arf = newARF();
+            arf.setModelContext(reducedHeader);
         }
-        arf.setModelContext(reducedHeader);
+    }
+
+    private Instance toModelInstance(Instance full) {
+        return useHardFilter
+                ? FilteredHeaderBuilder.filteredInstance(full, space, cachedSelection, reducedHeader)
+                : full;
     }
 
     @Override
     public double[] predictProba(Instance full) {
         syncSelection();
-        Instance reduced = FilteredHeaderBuilder.filteredInstance(
-                full, space, cachedSelection, reducedHeader);
-        return arf.getVotesForInstance(reduced);
+        return arf.getVotesForInstance(toModelInstance(full));
     }
 
     @Override
     public int predict(Instance full) {
-        double[] votes = predictProba(full);
+        double[] v = predictProba(full);
+        if (v == null || v.length == 0) return 0;
         int best = 0;
-        for (int i = 1; i < votes.length; i++) if (votes[i] > votes[best]) best = i;
+        for (int i = 1; i < v.length; i++) if (v[i] > v[best]) best = i;
         return best;
     }
 
     @Override
-    public void train(Instance full, int classLabel) {
-        train(full, classLabel, false, Set.of());
-    }
+    public void train(Instance full, int classLabel) { train(full, classLabel, false, Set.of()); }
 
     @Override
     public void train(Instance full, int classLabel,
                       boolean driftAlarm, Set<Integer> driftingFeatures) {
         syncSelection();
-        Instance reduced = FilteredHeaderBuilder.filteredInstance(
-                full, space, cachedSelection, reducedHeader);
-        reduced.setClassValue(classLabel);
-        arf.trainOnInstance(reduced);
-        selector.update(space.extractFeatures(full), classLabel,
-                driftAlarm, driftingFeatures == null ? Set.of() : driftingFeatures);
+        Instance toModel = useHardFilter
+                ? FilteredHeaderBuilder.filteredInstance(full, space, cachedSelection, reducedHeader)
+                : full;
+        toModel.setClassValue(classLabel);
+        arf.trainOnInstance(toModel);
     }
 
-    @Override
-    public FeatureSelector getSelector()  { return selector; }
-    @Override
-    public int[] getCurrentSelection()    { return cachedSelection.clone(); }
-    @Override
-    public void reset()                   { rebuild(); }
-
-    public AdaptiveRandomForest getARF()  { return arf; }
-
-    @Override
-    public String name() {
-        return "ARF(size=" + ensembleSize + ", lambda=" + lambda + ") + " + selector.name();
+    @Override public int[] getCurrentSelection() { return cachedSelection.clone(); }
+    @Override public void reset() { rebuild(); }
+    @Override public String name() {
+        return "ARF(size=" + ensembleSize + ", lambda=" + lambda
+                + ", hardFilter=" + useHardFilter + ") + " + selector.name();
     }
 }
