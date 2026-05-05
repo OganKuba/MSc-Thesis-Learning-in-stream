@@ -74,6 +74,10 @@ public abstract class AbstractFrequencyRanker implements FilterRanker {
 
     protected abstract double score(int featureIdx);
 
+    private double safeScore(double score) {
+        return (Double.isFinite(score) && score >= 0.0) ? score : 0.0;
+    }
+
     @Override
     public int[] selectTopK(int k) {
         return selectTopK(k, null);
@@ -84,9 +88,16 @@ public abstract class AbstractFrequencyRanker implements FilterRanker {
         if (k < 1 || k > numFeatures) {
             throw new IllegalArgumentException("k must be in [1, " + numFeatures + "]");
         }
+
         double[] scores = getFeatureScores();
+        double[] safeScores = new double[scores.length];
+        for (int i = 0; i < scores.length; i++) {
+            safeScores[i] = safeScore(scores[i]);
+        }
+
         int[] preferRank = new int[numFeatures];
         Arrays.fill(preferRank, Integer.MAX_VALUE);
+
         if (preferredOrder != null) {
             for (int r = 0; r < preferredOrder.length; r++) {
                 int idx = preferredOrder[r];
@@ -95,17 +106,23 @@ public abstract class AbstractFrequencyRanker implements FilterRanker {
                 }
             }
         }
+
         Integer[] idx = new Integer[numFeatures];
         for (int i = 0; i < numFeatures; i++) idx[i] = i;
+
         Arrays.sort(idx, (a, b) -> {
-            int cmp = Double.compare(scores[b], scores[a]);
+            int cmp = Double.compare(safeScores[b], safeScores[a]); // descending
             if (cmp != 0) return cmp;
+
             cmp = Integer.compare(preferRank[a], preferRank[b]);
             if (cmp != 0) return cmp;
+
             return Integer.compare(a, b);
         });
+
         int[] out = new int[k];
         for (int i = 0; i < k; i++) out[i] = idx[i];
+
         return out;
     }
 
@@ -158,9 +175,36 @@ public abstract class AbstractFrequencyRanker implements FilterRanker {
         if (!(tieEpsilon >= 0.0)) {
             throw new IllegalArgumentException("tieEpsilon must be >= 0");
         }
+
         double[] scores = getFeatureScores();
-        int[] preferRank = new int[numFeatures];
-        java.util.Arrays.fill(preferRank, Integer.MAX_VALUE);
+        double[] safeScores = new double[scores.length];
+        for (int i = 0; i < scores.length; i++) {
+            safeScores[i] = safeScore(scores[i]);
+        }
+
+        final long[] scoreKey = new long[numFeatures];
+        if (tieEpsilon > 0.0) {
+            for (int i = 0; i < numFeatures; i++) {
+                double v = safeScores[i];
+                if (Double.isNaN(v) || Double.isInfinite(v)) {
+                    scoreKey[i] = Long.MIN_VALUE;
+                } else {
+                    scoreKey[i] = Math.round(v / tieEpsilon);
+                }
+            }
+        } else {
+            for (int i = 0; i < numFeatures; i++) {
+                double v = safeScores[i];
+                if (Double.isNaN(v)) {
+                    scoreKey[i] = Long.MIN_VALUE;
+                } else {
+                    scoreKey[i] = Double.doubleToLongBits(v);
+                }
+            }
+        }
+
+        final int[] preferRank = new int[numFeatures];
+        Arrays.fill(preferRank, Integer.MAX_VALUE);
         if (preferredOrder != null) {
             for (int r = 0; r < preferredOrder.length; r++) {
                 int idx = preferredOrder[r];
@@ -169,19 +213,24 @@ public abstract class AbstractFrequencyRanker implements FilterRanker {
                 }
             }
         }
+
         Integer[] idx = new Integer[numFeatures];
         for (int i = 0; i < numFeatures; i++) idx[i] = i;
-        java.util.Arrays.sort(idx, (a, b) -> {
-            double diff = scores[b] - scores[a];
-            if (Math.abs(diff) > tieEpsilon) return diff > 0 ? 1 : -1;
-            int cmp = Integer.compare(preferRank[a], preferRank[b]);
+
+        Arrays.sort(idx, (a, b) -> {
+            int cmp = Long.compare(scoreKey[b], scoreKey[a]);
+            if (cmp != 0) return cmp;
+            cmp = Integer.compare(preferRank[a], preferRank[b]);
             if (cmp != 0) return cmp;
             return Integer.compare(a, b);
         });
+
         int[] out = new int[k];
         for (int i = 0; i < k; i++) out[i] = idx[i];
+
         return out;
     }
+
 
     protected double featureTotal(int featureIdx) { return featureTotals[featureIdx]; }
     protected double[] classMarginal(int featureIdx) { return featureClassMarginals[featureIdx]; }
