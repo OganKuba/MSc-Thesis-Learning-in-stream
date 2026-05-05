@@ -52,6 +52,9 @@ public class E3DASRP {
         public int ensembleSize = 10;
         public double lambda = 6.0;
         public int wPostDrift = 1000;
+        public double importancePower = 2.0;
+        public double samplingBeta = 0.7;
+        public double minLearnerWeightFactor = 0.1;
     }
 
     public static final class Cfg {
@@ -123,6 +126,9 @@ public class E3DASRP {
             vv.ensembleSize = v.path("ensemble_size").asInt(vv.ensembleSize);
             vv.lambda       = v.path("lambda").asDouble(vv.lambda);
             vv.wPostDrift   = v.path("w_post_drift").asInt(vv.wPostDrift);
+            vv.importancePower = v.path("importance_power").asDouble(vv.importancePower);
+            vv.samplingBeta = v.path("sampling_beta").asDouble(vv.samplingBeta);
+            vv.minLearnerWeightFactor = v.path("min_learner_weight_factor").asDouble(vv.minLearnerWeightFactor);
             if (vv.name == null || vv.name.isEmpty()) throw new IllegalArgumentException("variant.name empty");
             return vv;
         }
@@ -573,6 +579,9 @@ public class E3DASRP {
         } else {
             da = new DriftAwareSRP(srp, v.tau, seed, null);
         }
+        da.setImportancePower(v.importancePower);
+        da.setSamplingBeta(v.samplingBeta);
+        da.setMinLearnerWeightFactor(v.minLearnerWeightFactor);
         final FilterRanker rankerRef = mh.scoreRanker;
         da.setScoreProvider(() -> {
             if (rankerRef == null) return null;

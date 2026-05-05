@@ -3,6 +3,7 @@ package thesis.detection;
 import lombok.Getter;
 
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 public class TwoLevelDriftDetector {
@@ -106,10 +107,8 @@ public class TwoLevelDriftDetector {
                 phase = Phase.MONITOR;
                 postCount = 0;
                 cooldownLeft = config.postDriftCooldown;
-                if (lastDriftingFeatures != null && !lastDriftingFeatures.isEmpty()) {
-                    lastGlobalDrift = true;
-                    globalAlarms++;
-                }
+                lastGlobalDrift = true;
+                globalAlarms++;
             }
             level1.update(predictionError);
             return;
@@ -120,8 +119,6 @@ public class TwoLevelDriftDetector {
         lastGlobalWarning = level1.isWarningDetected();
 
         if (level1.isChangeDetected()) {
-            globalAlarms++;
-            lastGlobalDrift = true;
             buffers.snapshotReferenceFromRolling();
             buffers.clearPost();
             postCount = 0;
@@ -148,7 +145,11 @@ public class TwoLevelDriftDetector {
 
     public boolean isGlobalDriftDetected()   { return lastGlobalDrift; }
     public boolean isGlobalWarningDetected() { return lastGlobalWarning; }
-    public Set<Integer> getDriftingFeatureIndices() { return lastDriftingFeatures; }
+    public Set<Integer> getDriftingFeatureIndices() {
+        return (lastDriftingFeatures == null || lastDriftingFeatures.isEmpty())
+                ? Collections.emptySet()
+                : new LinkedHashSet<>(lastDriftingFeatures);
+    }
     public double getLevel1Estimation() { return level1.getEstimation(); }
     public String level1Name() { return level1.name(); }
 
