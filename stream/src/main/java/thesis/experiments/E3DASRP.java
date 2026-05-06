@@ -55,6 +55,10 @@ public class E3DASRP {
         public double importancePower = 2.0;
         public double samplingBeta = 0.7;
         public double minLearnerWeightFactor = 0.1;
+        public double maxLearnerWeightFactor = 3.0;
+        public double maxBlendAlpha = 0.5;
+        public double topKFraction = 0.3;
+        public double correctionAlpha = 0.15;
     }
 
     public static final class Cfg {
@@ -129,6 +133,10 @@ public class E3DASRP {
             vv.importancePower = v.path("importance_power").asDouble(vv.importancePower);
             vv.samplingBeta = v.path("sampling_beta").asDouble(vv.samplingBeta);
             vv.minLearnerWeightFactor = v.path("min_learner_weight_factor").asDouble(vv.minLearnerWeightFactor);
+            vv.maxLearnerWeightFactor = v.path("max_learner_weight_factor").asDouble(vv.maxLearnerWeightFactor);
+            vv.maxBlendAlpha = v.path("max_blend_alpha").asDouble(vv.maxBlendAlpha);
+            vv.topKFraction = v.path("top_k_fraction").asDouble(vv.topKFraction);
+            vv.correctionAlpha = v.path("correction_alpha").asDouble(vv.correctionAlpha);
             if (vv.name == null || vv.name.isEmpty()) throw new IllegalArgumentException("variant.name empty");
             return vv;
         }
@@ -582,6 +590,10 @@ public class E3DASRP {
         da.setImportancePower(v.importancePower);
         da.setSamplingBeta(v.samplingBeta);
         da.setMinLearnerWeightFactor(v.minLearnerWeightFactor);
+        da.setMaxLearnerWeightFactor(v.maxLearnerWeightFactor);
+        da.setMaxBlendAlpha(v.maxBlendAlpha);
+        da.setTopKFraction(v.topKFraction);
+        da.setCorrectionAlpha(v.correctionAlpha);
         final FilterRanker rankerRef = mh.scoreRanker;
         da.setScoreProvider(() -> {
             if (rankerRef == null) return null;

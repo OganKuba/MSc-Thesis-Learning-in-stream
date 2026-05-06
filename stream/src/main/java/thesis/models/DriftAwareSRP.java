@@ -68,9 +68,20 @@ public class DriftAwareSRP implements ModelWrapper {
     @Getter private double importancePower = 2.0;
     @Getter private double samplingBeta = 0.7;
     @Getter private double minLearnerWeightFactor = 0.1;
-    @Getter private double weightedVoteCvThreshold = 0.02;
-    @Getter private double blendAlphaLow = 0.02;
-    @Getter private double blendAlphaHigh = 0.20;
+    @Getter private double maxLearnerWeightFactor = 3.0;
+    @Getter private double weightedVoteCvThreshold = 0.05;
+    @Getter private double blendAlphaLow = 0.05;
+    @Getter private double blendAlphaHigh = 0.30;
+    @Getter private double maxBlendAlpha = 0.5;
+    @Getter private double weightSumTolerance = 1e-6;
+
+    @Getter private double topKFraction = 0.3;
+    @Getter private double correctionAlpha = 0.15;
+
+    @Getter private long correctionAppliedCount;
+    @Getter private long correctionAgreementCount;
+    private double sumAlphaApplied;
+    private double sumEntropyShift;
 
     @Getter private long handleDriftCalls;
     @Getter private long autoHandleDriftCalls;
@@ -140,6 +151,12 @@ public class DriftAwareSRP implements ModelWrapper {
         this.minLearnerWeightFactor = factor;
     }
 
+    public void setMaxLearnerWeightFactor(double factor) {
+        if (!(factor >= 1.0) || !Double.isFinite(factor))
+            throw new IllegalArgumentException("maxLearnerWeightFactor must be >= 1 and finite");
+        this.maxLearnerWeightFactor = factor;
+    }
+
     public void setWeightedVoteCvThreshold(double threshold) {
         if (!(threshold >= 0.0) || !Double.isFinite(threshold))
             throw new IllegalArgumentException("weightedVoteCvThreshold must be >= 0 and finite");
@@ -151,6 +168,37 @@ public class DriftAwareSRP implements ModelWrapper {
             throw new IllegalArgumentException("require 0 <= lo < hi <= 1");
         this.blendAlphaLow = lo;
         this.blendAlphaHigh = hi;
+    }
+
+    public void setMaxBlendAlpha(double maxAlpha) {
+        if (!(maxAlpha >= 0.0 && maxAlpha <= 1.0))
+            throw new IllegalArgumentException("maxBlendAlpha must be in [0, 1]");
+        this.maxBlendAlpha = maxAlpha;
+    }
+
+    public void setTopKFraction(double fraction) {
+        if (!(fraction > 0.0 && fraction <= 1.0))
+            throw new IllegalArgumentException("topKFraction must be in (0, 1]");
+        this.topKFraction = fraction;
+    }
+
+    public void setCorrectionAlpha(double alpha) {
+        if (!(alpha >= 0.0 && alpha <= 1.0))
+            throw new IllegalArgumentException("correctionAlpha must be in [0, 1]");
+        this.correctionAlpha = alpha;
+    }
+
+    public double getMeanAlphaApplied() {
+        return correctionAppliedCount == 0 ? 0.0 : sumAlphaApplied / correctionAppliedCount;
+    }
+
+    public double getCorrectionAgreementRate() {
+        return correctionAppliedCount == 0
+                ? 1.0 : (double) correctionAgreementCount / correctionAppliedCount;
+    }
+
+    public double getMeanEntropyShift() {
+        return correctionAppliedCount == 0 ? 0.0 : sumEntropyShift / correctionAppliedCount;
     }
 
     public void setScoreProvider(ScoreProvider sp) { this.scoreProvider = sp; }
@@ -216,39 +264,75 @@ public class DriftAwareSRP implements ModelWrapper {
     }
 
     public double[] predictProbaWeighted(Instance full) {
+        double[] srpProba = srpWrapper.predictProba(full);
+        if (srpProba == null || srpProba.length == 0) {
+            unweightedFallbacks++;
+            return srpProba == null ? new double[0] : srpProba;
+        }
+        if (!isAllFinite(srpProba)) {
+            unweightedFallbacks++;
+            return srpProba;
+        }
+        double srpSum = 0.0;
+        for (double v : srpProba) srpSum += v;
+        if (!Double.isFinite(srpSum) || srpSum <= 0.0) {
+            unweightedFallbacks++;
+            return srpProba;
+        }
+        int numClasses = srpProba.length;
+        double[] srpNorm = new double[numClasses];
+        for (int i = 0; i < numClasses; i++) srpNorm[i] = srpProba[i] / srpSum;
+
+        if (importance == null || correctionAlpha <= 0.0) {
+            unweightedFallbacks++;
+            return srpProba;
+        }
         Object[] ensemble = readEnsembleArray();
         if (ensemble == null || ensemble.length == 0) {
             unweightedFallbacks++;
-            return srpWrapper.predictProba(full);
+            return srpProba;
         }
         double[] impOrig = importance.getImportance();
-        if (impOrig == null || !isAllFinite(impOrig)) {
+        if (impOrig == null || !isAllFinite(impOrig) || !hasAnyPositive(impOrig)) {
             unweightedFallbacks++;
-            return srpWrapper.predictProba(full);
-        }
-        double[] weights = computeLearnerWeights(ensemble, impOrig);
-        lastLearnerWeights = weights.clone();
-        if (!isAllFinite(weights)) {
-            unweightedFallbacks++;
-            return srpWrapper.predictProba(full);
+            return srpProba;
         }
 
-        double cv = coefficientOfVariation(weights);
-        if (cv < weightedVoteCvThreshold) {
+        int N = ensemble.length;
+        double[] raw = new double[N];
+        int positive = 0;
+        for (int li = 0; li < N; li++) {
+            int[] sub = readSubspace(ensemble[li]);
+            if (sub.length == 0) { raw[li] = 0.0; continue; }
+            double w = 0.0;
+            int counted = 0;
+            for (int s : sub) {
+                if (s < 0 || s >= origDim) continue;
+                double v = impOrig[s];
+                if (Double.isFinite(v) && v >= 0.0) { w += v; counted++; }
+            }
+            raw[li] = (counted == 0) ? 0.0 : w / counted;
+            if (raw[li] > 0.0 && Double.isFinite(raw[li])) positive++;
+        }
+        if (positive == 0) {
             unweightedFallbacks++;
-            return srpWrapper.predictProba(full);
+            return srpProba;
         }
 
-        int numClasses = srpWrapper.getReducedHeader().numClasses();
-        if (numClasses < 2) {
-            unweightedFallbacks++;
-            return srpWrapper.predictProba(full);
-        }
+        Integer[] order = new Integer[N];
+        for (int i = 0; i < N; i++) order[i] = i;
+        Arrays.sort(order, (a, b) -> Double.compare(raw[b], raw[a]));
 
-        double[] weightedAgg = new double[numClasses];
-        boolean any = false;
-        for (int li = 0; li < ensemble.length; li++) {
-            if (!(weights[li] > 0.0)) continue;
+        int K = Math.max(1, (int) Math.ceil(N * topKFraction));
+        if (K > N) K = N;
+
+        double[] agg = new double[numClasses];
+        double rankWeightSum = 0.0;
+        int used = 0;
+        double[] learnerWeightsLog = new double[N];
+        for (int rank = 0; rank < K; rank++) {
+            int li = order[rank];
+            if (!(raw[li] > 0.0)) break;
             Classifier c = asClassifier(ensemble[li]);
             if (c == null) continue;
             double[] votes;
@@ -259,88 +343,73 @@ public class DriftAwareSRP implements ModelWrapper {
             double vsum = 0.0;
             for (double vv : votes) vsum += vv;
             if (!(vsum > 0.0) || !Double.isFinite(vsum)) continue;
-            int upTo = Math.min(votes.length, weightedAgg.length);
-            for (int ci = 0; ci < upTo; ci++) weightedAgg[ci] += weights[li] * (votes[ci] / vsum);
-            any = true;
+            double w = (double) (K - rank);
+            int upTo = Math.min(votes.length, numClasses);
+            for (int ci = 0; ci < upTo; ci++) agg[ci] += w * (votes[ci] / vsum);
+            learnerWeightsLog[li] = w;
+            rankWeightSum += w;
+            used++;
         }
-        if (!any) { unweightedFallbacks++; return srpWrapper.predictProba(full); }
-
-        double wsum = 0.0;
-        for (double v : weightedAgg) wsum += v;
-        if (!Double.isFinite(wsum) || wsum <= 0.0) {
+        if (used == 0 || !(rankWeightSum > 0.0)) {
             unweightedFallbacks++;
-            return srpWrapper.predictProba(full);
+            return srpProba;
         }
-        for (int i = 0; i < weightedAgg.length; i++) weightedAgg[i] /= wsum;
+        double aggSum = 0.0;
+        for (int i = 0; i < numClasses; i++) {
+            agg[i] /= rankWeightSum;
+            aggSum += agg[i];
+        }
+        if (!Double.isFinite(aggSum) || aggSum <= 0.0) {
+            unweightedFallbacks++;
+            return srpProba;
+        }
+        for (int i = 0; i < numClasses; i++) agg[i] /= aggSum;
+        if (!isAllFinite(agg)) {
+            unweightedFallbacks++;
+            return srpProba;
+        }
 
-        double alpha = blendAlpha(cv, blendAlphaLow, blendAlphaHigh);
-        double[] srpProba = srpWrapper.predictProba(full);
-        if (srpProba == null || srpProba.length == 0 || !isAllFinite(srpProba)) {
-            weightedPredictions++;
-            return weightedAgg;
-        }
-        double srpSum = 0.0;
-        for (double v : srpProba) srpSum += v;
-        if (!Double.isFinite(srpSum) || srpSum <= 0.0) {
-            weightedPredictions++;
-            return weightedAgg;
-        }
-        int len = Math.min(weightedAgg.length, srpProba.length);
-        double[] blended = new double[weightedAgg.length];
-        for (int i = 0; i < len; i++) {
-            blended[i] = alpha * weightedAgg[i] + (1.0 - alpha) * (srpProba[i] / srpSum);
+        double alpha = correctionAlpha;
+        if (alpha > maxBlendAlpha) alpha = maxBlendAlpha;
+        if (alpha < 0.0) alpha = 0.0;
+
+        double[] blended = new double[numClasses];
+        for (int i = 0; i < numClasses; i++) {
+            blended[i] = (1.0 - alpha) * srpNorm[i] + alpha * agg[i];
         }
         double bsum = 0.0;
         for (double v : blended) bsum += v;
-        if (Double.isFinite(bsum) && bsum > 0.0) {
-            for (int i = 0; i < blended.length; i++) blended[i] /= bsum;
-        } else {
-            weightedPredictions++;
-            return weightedAgg;
+        if (!Double.isFinite(bsum) || bsum <= 0.0) {
+            unweightedFallbacks++;
+            return srpProba;
         }
+        for (int i = 0; i < numClasses; i++) blended[i] /= bsum;
+        if (!isAllFinite(blended)) {
+            unweightedFallbacks++;
+            return srpProba;
+        }
+
+        if (argmax(blended) == argmax(srpNorm)) correctionAgreementCount++;
+        sumAlphaApplied += alpha;
+        sumEntropyShift += entropy(blended) - entropy(srpNorm);
+        correctionAppliedCount++;
         weightedPredictions++;
-
-        if (weightedPredictions <= 5 || weightedPredictions % 1000 == 0) {
-            System.out.printf("[ABC-DBG] wPred=%d cv=%.3f alpha=%.2f impHead=%s wHead=%s%n",
-                    weightedPredictions, cv, alpha,
-                    Arrays.toString(Arrays.copyOf(impOrig, Math.min(5, impOrig.length))),
-                    Arrays.toString(Arrays.copyOf(weights, Math.min(5, weights.length))));
-        }
-
+        lastLearnerWeights = learnerWeightsLog;
         return blended;
     }
 
-    private static double coefficientOfVariation(double[] w) {
-        if (w == null || w.length == 0) return 0.0;
-        double sum = 0.0;
-        int n = 0;
-        for (double v : w) { if (Double.isFinite(v)) { sum += v; n++; } }
-        if (n == 0) return 0.0;
-        double mean = sum / n;
-        if (!(mean > 0.0)) return 0.0;
-        double sq = 0.0;
-        for (double v : w) if (Double.isFinite(v)) { double d = v - mean; sq += d * d; }
-        double std = Math.sqrt(sq / n);
-        return std / mean;
+    private static int argmax(double[] x) {
+        int b = 0;
+        for (int i = 1; i < x.length; i++) if (x[i] > x[b]) b = i;
+        return b;
     }
 
-    private static double blendAlpha(double cv, double lo, double hi) {
-        if (!(hi > lo)) return cv > lo ? 1.0 : 0.0;
-        if (cv <= lo) return 0.0;
-        if (cv >= hi) return 1.0;
-        return (cv - lo) / (hi - lo);
-    }
-
-
-    private static boolean isEffectivelyUniform(double[] w, double relTol) {
-        double mn = Double.POSITIVE_INFINITY, mx = Double.NEGATIVE_INFINITY;
-        int positive = 0;
-        for (double v : w) {
-            if (v > 0.0) { positive++; if (v < mn) mn = v; if (v > mx) mx = v; }
+    private static double entropy(double[] p) {
+        double h = 0.0;
+        for (double v : p) {
+            if (v > 0.0 && Double.isFinite(v)) h -= v * Math.log(v);
         }
-        if (positive == 0) return true;
-        if (mn <= 0.0) return false;
-        return ((mx - mn) / mx) < relTol;
+        return h;
     }
 
 
@@ -578,56 +647,6 @@ public class DriftAwareSRP implements ModelWrapper {
         return out;
     }
 
-    private double[] computeLearnerWeights(Object[] ensemble, double[] impOrig) {
-        double[] raw = new double[ensemble.length];
-        int nonZero = 0;
-        for (int li = 0; li < ensemble.length; li++) {
-            int[] sub = readSubspace(ensemble[li]);
-            if (sub.length == 0) { raw[li] = 0.0; continue; }
-            double w = 0.0;
-            int counted = 0;
-            for (int s : sub) {
-                if (s < 0 || s >= origDim) continue;
-                w += impOrig[s];
-                counted++;
-            }
-            raw[li] = (counted == 0) ? 0.0 : w / counted;
-            if (raw[li] > 0.0) nonZero++;
-        }
-        double[] weights = new double[ensemble.length];
-        if (nonZero == 0) {
-            Arrays.fill(weights, 1.0 / ensemble.length);
-            return weights;
-        }
-        double sharpenedSum = 0.0;
-        for (int li = 0; li < ensemble.length; li++) {
-            double v = (raw[li] > 0.0 && Double.isFinite(raw[li]))
-                    ? Math.pow(raw[li], importancePower) : 0.0;
-            if (!Double.isFinite(v) || v < 0.0) v = 0.0;
-            weights[li] = v;
-            sharpenedSum += v;
-        }
-        if (!Double.isFinite(sharpenedSum) || sharpenedSum <= 0.0) {
-            Arrays.fill(weights, 1.0 / ensemble.length);
-            return weights;
-        }
-        for (int li = 0; li < ensemble.length; li++) weights[li] /= sharpenedSum;
-
-        double meanW = 1.0 / ensemble.length;
-        double floor = minLearnerWeightFactor * meanW;
-        double finalSum = 0.0;
-        for (int li = 0; li < ensemble.length; li++) {
-            if (!Double.isFinite(weights[li]) || weights[li] < 0.0) weights[li] = 0.0;
-            if (weights[li] < floor) weights[li] = floor;
-            finalSum += weights[li];
-        }
-        if (Double.isFinite(finalSum) && finalSum > 0.0) {
-            for (int li = 0; li < ensemble.length; li++) weights[li] /= finalSum;
-        } else {
-            Arrays.fill(weights, 1.0 / ensemble.length);
-        }
-        return weights;
-    }
 
 
 
@@ -771,6 +790,9 @@ public class DriftAwareSRP implements ModelWrapper {
         handleDriftCalls = autoHandleDriftCalls = totalKept = totalSurgical = totalFull = totalNoReplacement = 0;
         totalSwapsPerformed = refreshCalls = totalRefreshed = 0;
         weightedPredictions = unweightedFallbacks = nonFiniteVoteSkips = 0;
+        correctionAppliedCount = correctionAgreementCount = 0;
+        sumAlphaApplied = 0.0;
+        sumEntropyShift = 0.0;
         lastSummary = null;
         lastLearnerWeights = null;
         instanceCounter = 0;
