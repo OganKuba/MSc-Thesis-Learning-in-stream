@@ -42,6 +42,62 @@ public final class SyntheticStreamFactory {
         return limit(s1234, numInstances);
     }
 
+    /**
+     * High-frequency SEA variant. Cycles through SEA functions 1→2→3→4→1… across
+     * {@code numDrifts} abrupt change-points distributed evenly over {@code numInstances}.
+     * For {@code numDrifts}=10 and {@code numInstances}=100_000 this yields a drift every 10k instances.
+     */
+    public static InstanceStream createMultiDriftSEA(int seed, int numInstances, int numDrifts) {
+        return buildCyclicAbruptStream(seed, numInstances, numDrifts,
+                /*numFunctions=*/4, /*tag=*/"SEA",
+                (s, fn) -> newSEA(s, fn));
+    }
+
+    /**
+     * High-frequency STAGGER variant. Cycles through STAGGER functions 1→2→3→1… across
+     * {@code numDrifts} abrupt change-points distributed evenly over {@code numInstances}.
+     */
+    public static InstanceStream createMultiDriftSTAGGER(int seed, int numInstances, int numDrifts) {
+        return buildCyclicAbruptStream(seed, numInstances, numDrifts,
+                /*numFunctions=*/3, /*tag=*/"STAGGER",
+                (s, fn) -> newStagger(s, fn));
+    }
+
+    @FunctionalInterface
+    private interface GeneratorBuilder {
+        InstanceStream build(int seed, int functionIndex);
+    }
+
+    private static InstanceStream buildCyclicAbruptStream(int seed, int numInstances,
+                                                          int numDrifts, int numFunctions,
+                                                          String tag, GeneratorBuilder gb) {
+        if (numDrifts < 1) {
+            throw new IllegalArgumentException(tag + ": numDrifts must be >= 1");
+        }
+        if (numInstances < numDrifts + 1) {
+            throw new IllegalArgumentException(tag + ": numInstances must be >= numDrifts+1");
+        }
+        int segments = numDrifts + 1;
+        int step = numInstances / segments;
+        if (step < 1) {
+            throw new IllegalArgumentException(tag + ": numInstances/(numDrifts+1) must be >= 1");
+        }
+        InstanceStream[] gens = new InstanceStream[segments];
+        for (int i = 0; i < segments; i++) {
+            int fn = (i % numFunctions) + 1;
+            gens[i] = gb.build(seed + 7 * i, fn);
+        }
+        InstanceStream chain = gens[segments - 1];
+        for (int i = segments - 2; i >= 0; i--) {
+            int pos = (i + 1) * step;
+            chain = newDrift(gens[i], chain, pos, 1, seed + 1000 + i);
+        }
+        if (chain instanceof OptionHandler) {
+            ((OptionHandler) chain).prepareForUse();
+        }
+        return limit(chain, numInstances);
+    }
+
     private static SEAGenerator newSEA(int seed, int function) {
         SEAGenerator g = new SEAGenerator();
         g.instanceRandomSeedOption.setValue(seed);

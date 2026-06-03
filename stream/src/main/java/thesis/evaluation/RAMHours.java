@@ -9,6 +9,7 @@ public class RAMHours {
     private long lastBytes;
     private boolean started;
     private boolean firstSample;
+    private long negativeSampleCount;
 
     public void start() {
         startNanos = System.nanoTime();
@@ -18,11 +19,21 @@ public class RAMHours {
         accumulatedGBHours = 0.0;
         started = true;
         firstSample = true;
+        negativeSampleCount = 0;
     }
 
     public void sample(long usedBytes) {
-        if (usedBytes < 0) throw new IllegalArgumentException("usedBytes < 0");
         if (!started) start();
+        if (usedBytes < 0) {
+            if (negativeSampleCount == 0) {
+                System.err.printf(
+                        "[RAMHours][WARN] negative usedBytes=%d clamped to 0 "
+                                + "(transient GC / non-atomic Runtime read); further occurrences suppressed%n",
+                        usedBytes);
+            }
+            negativeSampleCount++;
+            usedBytes = 0L;
+        }
         long now = System.nanoTime();
         if (firstSample) {
             firstSample = false;
@@ -41,8 +52,13 @@ public class RAMHours {
 
     public void sampleFromRuntime() {
         Runtime r = Runtime.getRuntime();
-        sample(r.totalMemory() - r.freeMemory());
+        long total = r.totalMemory();
+        long free  = r.freeMemory();
+        long used  = total - free;
+        sample(used < 0 ? 0L : used);
     }
+
+    public long getNegativeSampleCount() { return negativeSampleCount; }
 
     public double getRamHours()     { return accumulatedGBHours; }
     public long getPeakBytes()      { return peakBytes < 0 ? 0 : peakBytes; }
@@ -59,5 +75,6 @@ public class RAMHours {
         peakBytes = -1;
         lastBytes = 0;
         accumulatedGBHours = 0.0;
+        negativeSampleCount = 0;
     }
 }

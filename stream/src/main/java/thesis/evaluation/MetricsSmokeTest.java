@@ -30,6 +30,8 @@ public class MetricsSmokeTest {
 
         testRamHoursMonotone();
         testRamHoursPeakMB();
+        testRamHoursNegativeSampleClampedNotThrown();
+        testCollectorRunSurvivesNegativeRamSample();
 
         testCollectorWindowedNotCumulative();
         testCollectorOnDriftAndSelectionFlag();
@@ -182,6 +184,49 @@ public class MetricsSmokeTest {
         r.sample(120L * 1024 * 1024);
         report("RAMHours peakMB tracks max (peak=" + r.getPeakMB() + ")",
                 Math.abs(r.getPeakMB() - 200.0) < 1e-6);
+    }
+
+    private static void testRamHoursNegativeSampleClampedNotThrown() {
+        RAMHours r = new RAMHours();
+        r.start();
+        r.sample(100L * 1024 * 1024);
+        boolean threw = false;
+        try {
+            r.sample(-1L);
+            r.sample(Long.MIN_VALUE / 2);
+        } catch (Throwable t) {
+            threw = true;
+        }
+        r.sample(150L * 1024 * 1024);
+        report("RAMHours: negative usedBytes is clamped, not thrown (neg="
+                        + r.getNegativeSampleCount() + ", peakMB=" + r.getPeakMB()
+                        + ", rh=" + r.getRamHours() + ")",
+                !threw
+                        && r.getNegativeSampleCount() == 2
+                        && Double.isFinite(r.getRamHours())
+                        && r.getRamHours() >= 0.0
+                        && Math.abs(r.getPeakMB() - 150.0) < 1e-6);
+    }
+
+    private static void testCollectorRunSurvivesNegativeRamSample() {
+        MetricsCollector mc = new MetricsCollector(2, 100, 0, 10);
+        for (int i = 0; i < 50; i++) mc.update(0, 0, 1000);
+        boolean threw = false;
+        try {
+            mc.getRam().sample(-42L);
+            for (int i = 0; i < 50; i++) mc.update(0, 0, 1000);
+        } catch (Throwable t) {
+            threw = true;
+        }
+        MetricsCollector.Snapshot snap = mc.snapshot();
+        report("MetricsCollector survives a negative RAM sample mid-run (inst="
+                        + snap.instances + ", rh=" + snap.ramHoursGB
+                        + ", neg=" + mc.getRam().getNegativeSampleCount() + ")",
+                !threw
+                        && snap.instances == 100
+                        && Double.isFinite(snap.ramHoursGB)
+                        && snap.ramHoursGB >= 0.0
+                        && mc.getRam().getNegativeSampleCount() >= 1);
     }
 
     private static void testCollectorWindowedNotCumulative() {

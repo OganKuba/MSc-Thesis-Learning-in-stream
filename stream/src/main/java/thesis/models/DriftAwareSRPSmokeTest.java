@@ -319,13 +319,13 @@ public class DriftAwareSRPSmokeTest {
     private static void testHandleDriftIdempotentAfterEmptySet() {
         int F = 5;
         DriftAwareSRP da = buildTrainedDA(F, 4, 1004);
-        int[][] before = da.getCurrentSubspaces();
         double[] scores = new double[F]; Arrays.fill(scores, 1.0);
-        da.handleDrift(Set.of(), scores);
-        int[][] after = da.getCurrentSubspaces();
-        boolean same = before.length == after.length;
-        for (int i = 0; i < before.length && same; i++) same = Arrays.equals(before[i], after[i]);
-        report("HandleDrift with empty set is no-op", same);
+        DriftActionSummary s = da.handleDrift(Set.of(), scores);
+        int expected = Math.max(1, (int) Math.ceil(s.getEnsembleSize()
+                * da.getUnlocalizedFallbackFraction()));
+        report("HandleDrift with empty set applies limited fallback (full="
+                        + s.getFullCount() + ")",
+                s.getFullCount() == expected);
     }
 
     private static void testHandleDriftRejectsBadScoresLength() {
@@ -379,8 +379,8 @@ public class DriftAwareSRPSmokeTest {
         double[] w = da.getLastLearnerWeights();
         double sum = 0.0; for (double x : w) sum += x;
         boolean nonNeg = true; for (double x : w) if (x < 0.0) nonNeg = false;
-        report("Learner weights sum=1 and >=0 (sum=" + sum + ")",
-                Math.abs(sum - 1.0) < 1e-9 && nonNeg);
+        report("Learner weights are raw non-negative rank weights (sum=" + sum + ")",
+                sum > 0.0 && nonNeg);
     }
 
     private static void testLearnerWeightsHigherForBetterSubspaces() {

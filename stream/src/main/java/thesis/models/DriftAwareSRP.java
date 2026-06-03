@@ -10,6 +10,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
@@ -77,6 +78,9 @@ public class DriftAwareSRP implements ModelWrapper {
 
     @Getter private double topKFraction = 0.3;
     @Getter private double correctionAlpha = 0.15;
+    @Getter private double unlocalizedFallbackFraction = 0.20;
+    @Getter private double unstableImportanceQuantile = 0.50;
+    @Getter private double surgicalReplacementTolerance = 0.95;
 
     @Getter private long correctionAppliedCount;
     @Getter private long correctionAgreementCount;
@@ -186,6 +190,24 @@ public class DriftAwareSRP implements ModelWrapper {
         if (!(alpha >= 0.0 && alpha <= 1.0))
             throw new IllegalArgumentException("correctionAlpha must be in [0, 1]");
         this.correctionAlpha = alpha;
+    }
+
+    public void setUnlocalizedFallbackFraction(double fraction) {
+        if (!(fraction >= 0.0 && fraction <= 1.0) || !Double.isFinite(fraction))
+            throw new IllegalArgumentException("unlocalizedFallbackFraction must be in [0, 1]");
+        this.unlocalizedFallbackFraction = fraction;
+    }
+
+    public void setUnstableImportanceQuantile(double quantile) {
+        if (!(quantile >= 0.0 && quantile <= 1.0) || !Double.isFinite(quantile))
+            throw new IllegalArgumentException("unstableImportanceQuantile must be in [0, 1]");
+        this.unstableImportanceQuantile = quantile;
+    }
+
+    public void setSurgicalReplacementTolerance(double tolerance) {
+        if (!(tolerance >= 0.0 && tolerance <= 1.0) || !Double.isFinite(tolerance))
+            throw new IllegalArgumentException("surgicalReplacementTolerance must be in [0, 1]");
+        this.surgicalReplacementTolerance = tolerance;
     }
 
     public double getMeanAlphaApplied() {
@@ -421,16 +443,22 @@ public class DriftAwareSRP implements ModelWrapper {
         if (featureScoresOriginal.length != origDim)
             throw new IllegalArgumentException("featureScoresOriginal length mismatch");
 
-        boolean[] driftingMask = new boolean[origDim];
-        for (int idx : driftingFeaturesOriginal) {
-            if (idx >= 0 && idx < origDim) driftingMask[idx] = true;
-        }
-
         Object[] ensemble = readEnsembleArray();
         if (ensemble == null || ensemble.length == 0) {
             handleDriftCalls++;
             lastSummary = new DriftActionSummary(0);
             return lastSummary;
+        }
+
+        if (driftingFeaturesOriginal.isEmpty() && unlocalizedFallbackFraction > 0.0) {
+            return handleUnlocalizedDrift(ensemble, featureScoresOriginal);
+        }
+
+        Set<Integer> unstableDrifting = lowImportanceDriftingFeatures(
+                driftingFeaturesOriginal, featureScoresOriginal, unstableImportanceQuantile);
+        boolean[] driftingMask = new boolean[origDim];
+        for (int idx : unstableDrifting) {
+            if (idx >= 0 && idx < origDim) driftingMask[idx] = true;
         }
 
         DriftActionSummary summary = new DriftActionSummary(ensemble.length);
@@ -469,8 +497,8 @@ public class DriftAwareSRP implements ModelWrapper {
                 summary.record(li, DriftActionSummary.Action.SURGICAL,
                         overlapCount, sub.length, swaps);
             } else {
-                Set<Integer> avoid = driftingFeaturesOriginal;
-                if (origDim - driftingFeaturesOriginal.size() < sub.length) {
+                Set<Integer> avoid = unstableDrifting;
+                if (origDim - unstableDrifting.size() < sub.length) {
                     avoid = Set.of();
                 }
                 int[] newSub = generateSubspace(sub.length, avoid);
@@ -494,6 +522,116 @@ public class DriftAwareSRP implements ModelWrapper {
         for (int s : summary.getSwapCounts()) totalSwapsPerformed += s;
         lastSummary = summary;
         return summary;
+    }
+
+    private DriftActionSummary handleUnlocalizedDrift(Object[] ensemble,
+                                                      double[] featureScoresOriginal) {
+        DriftActionSummary summary = new DriftActionSummary(ensemble.length);
+        double[] subspaceScores = new double[ensemble.length];
+        boolean[] hasSubspace = new boolean[ensemble.length];
+        Arrays.fill(subspaceScores, Double.POSITIVE_INFINITY);
+
+        for (int li = 0; li < ensemble.length; li++) {
+            int[] sub = readSubspace(ensemble[li]);
+            if (sub.length == 0) {
+                summary.record(li, DriftActionSummary.Action.KEEP, 0, 0, 0);
+                continue;
+            }
+            hasSubspace[li] = true;
+            subspaceScores[li] = meanSubspaceScore(sub, featureScoresOriginal);
+        }
+
+        int refreshTarget = (int) Math.ceil(ensemble.length * unlocalizedFallbackFraction);
+        refreshTarget = Math.max(1, Math.min(refreshTarget, ensemble.length));
+        boolean[] refresh = chooseLowestScoredLearners(subspaceScores, refreshTarget);
+
+        for (int li = 0; li < ensemble.length; li++) {
+            if (!hasSubspace[li]) continue;
+            int[] sub = readSubspace(ensemble[li]);
+            if (!refresh[li]) {
+                summary.record(li, DriftActionSummary.Action.KEEP, 0, sub.length, 0);
+                continue;
+            }
+            int[] newSub = generateSubspace(sub.length, Set.of());
+            if (newSub.length != sub.length) {
+                throw new IllegalStateException("generateSubspace changed length: "
+                        + sub.length + " -> " + newSub.length);
+            }
+            Arrays.sort(newSub);
+            writeSubspaceSafely(ensemble[li], newSub);
+            resetLearner(ensemble[li]);
+            summary.record(li, DriftActionSummary.Action.FULL, 0, sub.length, sub.length);
+        }
+
+        handleDriftCalls++;
+        totalKept          += summary.getKeptCount();
+        totalSurgical      += summary.getSurgicalCount();
+        totalFull          += summary.getFullCount();
+        totalNoReplacement += summary.getNoReplacementCount();
+        for (int s : summary.getSwapCounts()) totalSwapsPerformed += s;
+        lastSummary = summary;
+        return summary;
+    }
+
+    private static double meanSubspaceScore(int[] sub, double[] featureScores) {
+        double sum = 0.0;
+        int count = 0;
+        for (int f : sub) {
+            if (f < 0 || f >= featureScores.length) continue;
+            double v = featureScores[f];
+            if (!Double.isFinite(v)) continue;
+            sum += v;
+            count++;
+        }
+        return count == 0 ? Double.POSITIVE_INFINITY : sum / count;
+    }
+
+    private static boolean[] chooseLowestScoredLearners(double[] scores, int target) {
+        boolean[] selected = new boolean[scores.length];
+        int selectable = 0;
+        for (double score : scores) {
+            if (Double.isFinite(score)) selectable++;
+        }
+        int take = Math.max(0, Math.min(target, selectable));
+        for (int picked = 0; picked < take; picked++) {
+            int best = -1;
+            for (int i = 0; i < scores.length; i++) {
+                if (selected[i] || !Double.isFinite(scores[i])) continue;
+                if (best < 0 || scores[i] < scores[best]) best = i;
+            }
+            if (best < 0) break;
+            selected[best] = true;
+        }
+        return selected;
+    }
+
+    private static Set<Integer> lowImportanceDriftingFeatures(Set<Integer> driftingFeatures,
+                                                              double[] scores,
+                                                              double quantile) {
+        if (driftingFeatures == null || driftingFeatures.isEmpty()) return Set.of();
+        double threshold = finiteQuantile(scores, quantile);
+        if (!Double.isFinite(threshold)) return Set.of();
+        Set<Integer> out = new HashSet<>();
+        for (int f : driftingFeatures) {
+            if (f < 0 || f >= scores.length) continue;
+            double score = scores[f];
+            if (Double.isFinite(score) && score <= threshold) out.add(f);
+        }
+        return out;
+    }
+
+    private static double finiteQuantile(double[] values, double quantile) {
+        int count = 0;
+        for (double v : values) if (Double.isFinite(v)) count++;
+        if (count == 0) return Double.NaN;
+        double[] finite = new double[count];
+        int j = 0;
+        for (double v : values) if (Double.isFinite(v)) finite[j++] = v;
+        Arrays.sort(finite);
+        int idx = (int) Math.floor(quantile * (finite.length - 1));
+        if (idx < 0) idx = 0;
+        if (idx >= finite.length) idx = finite.length - 1;
+        return finite[idx];
     }
 
     private static final String[] STALE_HEADER_FIELDS = {
@@ -563,7 +701,7 @@ public class DriftAwareSRP implements ModelWrapper {
         for (int p = 0; p < sortedDriftPos.length && candIdx < candidates.length; p++) {
             int pos = sortedDriftPos[p];
             int replacement = candidates[candIdx];
-            if (scoresOrig[replacement] > scoresOrig[result[pos]]) {
+            if (isAcceptableSurgicalReplacement(scoresOrig[replacement], scoresOrig[result[pos]])) {
                 result[pos] = replacement;
                 candIdx++;
             } else {
@@ -571,6 +709,12 @@ public class DriftAwareSRP implements ModelWrapper {
             }
         }
         return result;
+    }
+
+    private boolean isAcceptableSurgicalReplacement(double replacementScore, double currentScore) {
+        if (!Double.isFinite(replacementScore)) return false;
+        if (!Double.isFinite(currentScore)) return true;
+        return replacementScore >= currentScore * surgicalReplacementTolerance;
     }
 
     private int[] generateSubspace(int size, Set<Integer> avoid) {

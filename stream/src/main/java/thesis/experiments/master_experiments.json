@@ -1,0 +1,136 @@
+{
+  "output_dir": "results",
+  "warmup": 1500,
+  "window_size": 1000,
+  "ram_sample_every": 200,
+  "num_threads": 12,
+  "default_max_instances": 100000,
+  "skip_missing_arff": true,
+  "real_datasets_read_all": true,
+  "seeds": [1, 2, 3, 4, 5],
+
+  "blocks": [
+    {
+      "id": "E1",
+      "description": "Baselines: naive methods, raw HT/ARF/SRP without external feature selection, and S1 static selection.",
+      "output_file": "E1_baselines.csv",
+      "variants": [
+        { "name": "Majority",  "model": "MAJORITY", "selector": "S1", "detector": "ADWIN" },
+        { "name": "NoChange",  "model": "NOCHANGE", "selector": "S1", "detector": "ADWIN" },
+        { "name": "HT",        "model": "HT",       "selector": "NONE", "detector": "ADWIN" },
+        { "name": "ARF",       "model": "ARF",      "selector": "NONE", "detector": "ADWIN", "ensemble_size": 10, "lambda": 6.0 },
+        { "name": "SRP",       "model": "SRP",      "selector": "NONE", "detector": "ADWIN", "ensemble_size": 10, "lambda": 6.0 },
+        { "name": "HT+S1",     "model": "HT",       "selector": "S1", "detector": "ADWIN" },
+        { "name": "ARF+S1",    "model": "ARF",      "selector": "S1", "detector": "ADWIN", "ensemble_size": 10, "lambda": 6.0 },
+        { "name": "SRP+S1",    "model": "SRP",      "selector": "S1", "detector": "ADWIN", "ensemble_size": 10, "lambda": 6.0 }
+      ],
+      "datasets": [
+        { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 100000, "noise_features": 5 },
+        { "name": "STAGGER",      "type": "synthetic", "generator": "STAGGER",            "n": 100000 },
+        { "name": "Hyperplane",   "type": "synthetic", "generator": "Hyperplane",         "n": 100000, "sigma": 0.01, "noise_features": 5 },
+        { "name": "RandomRBF",    "type": "synthetic", "generator": "RandomRBF",          "n": 100000, "speed": 0.001, "noise_features": 5 },
+        { "name": "FeatureDrift", "type": "synthetic", "generator": "CustomFeatureDrift", "n": 100000, "drift_features": 5, "sigma": 0.01, "noise_features": 5 },
+        { "name": "YahooFinance", "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/yahoo_finance/data/arff/yahoo_finance.arff" },
+        { "name": "NYCTaxi",      "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/nyc_taxi/data/arff/nyc_taxi.arff" },
+        { "name": "NHTS",         "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/data/arff/nhts.arff" }
+      ]
+    },
+
+    {
+      "id": "E2",
+      "description": "Adaptive feature selection — ARF/SRP × S1..S4 sweep, ADWIN detector.",
+      "output_file": "E2_adaptive.csv",
+      "variants": [
+        { "name": "ARF",    "model": "ARF", "selector": "NONE", "detector": "ADWIN" },
+        { "name": "ARF+S1", "model": "ARF", "selector": "S1", "detector": "ADWIN" },
+        { "name": "ARF+S2", "model": "ARF", "selector": "S2", "detector": "ADWIN", "w_post_drift": 1000 },
+        { "name": "ARF+S3", "model": "ARF", "selector": "S3", "detector": "ADWIN", "periodic_interval": 1000 },
+        { "name": "ARF+S4", "model": "ARF", "selector": "S4", "detector": "ADWIN", "periodic_interval": 1000, "w_post_drift": 1000 },
+        { "name": "SRP",    "model": "SRP", "selector": "NONE", "detector": "ADWIN" },
+        { "name": "SRP+S1", "model": "SRP", "selector": "S1", "detector": "ADWIN" },
+        { "name": "SRP+S2", "model": "SRP", "selector": "S2", "detector": "ADWIN", "w_post_drift": 1000 },
+        { "name": "SRP+S3", "model": "SRP", "selector": "S3", "detector": "ADWIN", "periodic_interval": 1000 },
+        { "name": "SRP+S4", "model": "SRP", "selector": "S4", "detector": "ADWIN", "periodic_interval": 1000, "w_post_drift": 1000 }
+      ],
+      "datasets": [
+        { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 100000, "noise_features": 5 },
+        { "name": "STAGGER",      "type": "synthetic", "generator": "STAGGER",            "n": 100000 },
+        { "name": "Hyperplane",   "type": "synthetic", "generator": "Hyperplane",         "n": 100000, "sigma": 0.01, "noise_features": 5 },
+        { "name": "RandomRBF",    "type": "synthetic", "generator": "RandomRBF",          "n": 100000, "speed": 0.001, "noise_features": 5 },
+        { "name": "FeatureDrift", "type": "synthetic", "generator": "CustomFeatureDrift", "n": 100000, "drift_features": 5, "sigma": 0.01, "noise_features": 5 }
+      ]
+    },
+
+    {
+      "id": "E3",
+      "description": "Ablation & comparative — DA-SRP (A / AB / ABC) vs DA-ARF (A / AB / ABC) on identical streams.",
+      "output_file": "E3_ablation.csv",
+      "variants": [
+        { "name": "SRP_baseline",     "model": "SRP",      "selector": "NONE", "detector": "ADWIN" },
+        { "name": "SRP+S1_baseline",  "model": "SRP",      "selector": "S1", "detector": "ADWIN" },
+        { "name": "ARF_baseline",     "model": "ARF",      "selector": "NONE", "detector": "ADWIN" },
+        { "name": "ARF+S2_baseline",  "model": "ARF",      "selector": "S2", "detector": "ADWIN", "w_post_drift": 1000 },
+
+        { "name": "DA-SRP-A",         "model": "DA-SRP-A",   "selector": "S1", "detector": "ADWIN", "tau": 0.5 },
+        { "name": "DA-SRP-AB",        "model": "DA-SRP-AB",  "selector": "S1", "detector": "ADWIN", "tau": 0.5, "w1": 0.7, "importance_power": 2.0, "sampling_beta": 0.7 },
+        { "name": "DA-SRP-ABC",       "model": "DA-SRP-ABC", "selector": "S1", "detector": "ADWIN", "tau": 0.5, "w1": 0.7, "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.3, "correction_alpha": 0.15, "max_blend_alpha": 0.5 },
+
+        { "name": "DA-ARF-A",         "model": "DA-ARF",   "selector": "S1", "detector": "ADWIN", "sampling_beta": 1.0, "topk_fraction": 1.0, "daarf_use_background": false },
+        { "name": "DA-ARF-AB",        "model": "DA-ARF",   "selector": "S1", "detector": "ADWIN", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 1.0, "daarf_use_background": true },
+        { "name": "DA-ARF-ABC",       "model": "DA-ARF",   "selector": "S1", "detector": "ADWIN", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5, "daarf_use_background": true }
+      ],
+      "datasets": [
+        { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 100000, "noise_features": 5 },
+        { "name": "STAGGER",      "type": "synthetic", "generator": "STAGGER",            "n": 100000 },
+        { "name": "Hyperplane",   "type": "synthetic", "generator": "Hyperplane",         "n": 100000, "sigma": 0.01, "noise_features": 5 },
+        { "name": "RandomRBF",    "type": "synthetic", "generator": "RandomRBF",          "n": 100000, "speed": 0.001, "noise_features": 5 },
+        { "name": "FeatureDrift", "type": "synthetic", "generator": "CustomFeatureDrift", "n": 100000, "drift_features": 5, "sigma": 0.01, "noise_features": 5 },
+        { "name": "YahooFinance", "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/yahoo_finance/data/arff/yahoo_finance.arff" },
+        { "name": "NYCTaxi",      "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/nyc_taxi/data/arff/nyc_taxi.arff" },
+        { "name": "NHTS",         "type": "arff", "path": "/home/kubog/MSc-Thesis-Learning-in-stream/preproccessing/data/arff/nhts.arff" }
+      ]
+    },
+
+    {
+      "id": "E4",
+      "description": "Drift magnitude & high dynamics — 10 drifts / 100k on SEA & STAGGER, ARF vs SRP vs DA-SRP-ABC vs DA-ARF.",
+      "output_file": "E4_high_dynamics.csv",
+      "variants": [
+        { "name": "ARF",          "model": "ARF",        "selector": "NONE", "detector": "ADWIN" },
+        { "name": "ARF+S1",       "model": "ARF",        "selector": "S1", "detector": "ADWIN" },
+        { "name": "SRP",          "model": "SRP",        "selector": "NONE", "detector": "ADWIN" },
+        { "name": "SRP+S1",       "model": "SRP",        "selector": "S1", "detector": "ADWIN" },
+        { "name": "DA-SRP-ABC",   "model": "DA-SRP-ABC", "selector": "S1", "detector": "ADWIN", "tau": 0.5, "w1": 0.7, "topk_fraction": 0.3, "correction_alpha": 0.15 },
+        { "name": "DA-ARF-ABC",   "model": "DA-ARF",     "selector": "S1", "detector": "ADWIN", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5, "daarf_use_background": true }
+      ],
+      "datasets": [
+        { "name": "SEA-HiDyn",     "type": "synthetic", "generator": "SEA",     "n": 100000, "num_drifts": 10, "noise_features": 5 },
+        { "name": "STAGGER-HiDyn", "type": "synthetic", "generator": "STAGGER", "n": 100000, "num_drifts": 10 },
+        { "name": "SEA-Low",       "type": "synthetic", "generator": "SEA",     "n": 100000, "num_drifts": 3 },
+        { "name": "STAGGER-Low",   "type": "synthetic", "generator": "STAGGER", "n": 100000, "num_drifts": 3 }
+      ]
+    },
+
+    {
+      "id": "E5",
+      "description": "Detector study — DA-ARF × {ADWIN, HDDM_A, HDDM_W, KSWIN}; tracks ext_full_count + drift_count for stability.",
+      "output_file": "E5_detectors.csv",
+      "variants": [
+        { "name": "DA-ARF+ADWIN",  "model": "DA-ARF", "selector": "S1", "detector": "ADWIN",  "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5 },
+        { "name": "DA-ARF+HDDM_A", "model": "DA-ARF", "selector": "S1", "detector": "HDDM_A", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5 },
+        { "name": "DA-ARF+HDDM_W", "model": "DA-ARF", "selector": "S1", "detector": "HDDM_W", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5 },
+        { "name": "DA-ARF+KSWIN",  "model": "DA-ARF", "selector": "S1", "detector": "KSWIN",  "kswin_alpha": 0.005, "kswin_window": 200, "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5 },
+        { "name": "ARF+ADWIN",     "model": "ARF",    "selector": "NONE", "detector": "ADWIN"  },
+        { "name": "SRP+ADWIN",     "model": "SRP",    "selector": "NONE", "detector": "ADWIN"  },
+        { "name": "ARF+S1+ADWIN",  "model": "ARF",    "selector": "S1",   "detector": "ADWIN"  },
+        { "name": "SRP+S1+ADWIN",  "model": "SRP",    "selector": "S1",   "detector": "ADWIN"  }
+      ],
+      "datasets": [
+        { "name": "SEA-HiDyn",     "type": "synthetic", "generator": "SEA",     "n": 100000, "num_drifts": 10, "noise_features": 5 },
+        { "name": "STAGGER-HiDyn", "type": "synthetic", "generator": "STAGGER", "n": 100000, "num_drifts": 10 },
+        { "name": "Hyperplane",    "type": "synthetic", "generator": "Hyperplane", "n": 100000, "sigma": 0.01, "noise_features": 5 },
+        { "name": "RandomRBF",     "type": "synthetic", "generator": "RandomRBF",  "n": 100000, "speed": 0.001, "noise_features": 5 }
+      ]
+    }
+  ]
+}
