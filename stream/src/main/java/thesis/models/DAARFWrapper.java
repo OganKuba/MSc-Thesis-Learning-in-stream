@@ -58,6 +58,29 @@ public class DAARFWrapper implements ModelWrapper {
     @Getter private double unstableImportanceQuantile = 0.50;
     @Getter private double externalResetFraction = 0.20;
 
+    /** How the external (detector-driven) KEEP/FULL pass replaces an eligible learner. */
+    public enum ExternalActionMode {
+        /** Original behaviour: rebuild the learner from scratch (fresh subspace + tree). */
+        RESET,
+        /** Surgical: swap only the drifting features in the subspace, keep the trained tree. */
+        SURGICAL
+    }
+
+    @Getter private ExternalActionMode externalActionMode = ExternalActionMode.RESET;
+    /** A4: when false, the intrinsic per-tree ADWIN drift/warning channel is disabled entirely. */
+    @Getter private boolean intrinsicDriftEnabled = true;
+    /** A3: when true, the external pass skips learners that already have a pending background. */
+    @Getter private boolean gateExternalOnPendingBackground = false;
+    /** Score tolerance for accepting a surgical replacement (mirrors DriftAwareSRP). */
+    @Getter private double surgicalReplacementTolerance = 0.95;
+
+    // A7: base-tree hyperparameters. Defaults match MOA AdaptiveRandomForest's tree config
+    // ("ARFHoeffdingTree -e 2000000 -g 50 -c 0.01"). The old code left HoeffdingTree defaults
+    // (grace=200, confidence=1e-7), producing shallow trees that collapsed to majority on
+    // imbalanced streams and handicapped DA-ARF vs the ARF baseline it is compared against.
+    @Getter private int treeGracePeriod = 50;
+    @Getter private double treeSplitConfidence = 0.01;
+
     private final Random rng;
     private FeatureImportance importance;
 
@@ -66,7 +89,11 @@ public class DAARFWrapper implements ModelWrapper {
 
     @Getter private long extKeepCount;
     @Getter private long extFullCount;
-    @Getter private long bkgPromotions;
+    @Getter private long extSurgicalCount;        // A2: external surgical swaps performed
+    @Getter private long extNoReplacementCount;   // A2: surgical pass found no acceptable swap
+    @Getter private long extGatedSkipCount;       // A3: external resets suppressed by gating
+    @Getter private long bkgPromotions;           // intrinsic: background promoted to foreground
+    @Getter private long intrinsicFullResetCount; // intrinsic: drift w/o background -> full reset
     @Getter private long warningCount;
     @Getter private long driftCount;
 
@@ -153,6 +180,41 @@ public class DAARFWrapper implements ModelWrapper {
         this.externalResetFraction = fraction;
     }
 
+    public void setExternalActionMode(ExternalActionMode mode) {
+        if (mode == null) throw new IllegalArgumentException("externalActionMode must not be null");
+        this.externalActionMode = mode;
+    }
+
+    public void setIntrinsicDriftEnabled(boolean enabled) {
+        this.intrinsicDriftEnabled = enabled;
+    }
+
+    public void setGateExternalOnPendingBackground(boolean gate) {
+        this.gateExternalOnPendingBackground = gate;
+    }
+
+    public void setSurgicalReplacementTolerance(double tolerance) {
+        if (!(tolerance >= 0.0 && tolerance <= 1.0) || !Double.isFinite(tolerance))
+            throw new IllegalArgumentException("surgicalReplacementTolerance must be in [0, 1]");
+        this.surgicalReplacementTolerance = tolerance;
+    }
+
+    /**
+     * A7: override base-tree split hyperparameters and rebuild the ensemble. Must be called
+     * before any training (the runner calls it right after construction). Defaults already
+     * match MOA ARF, so this is only needed for sensitivity analysis.
+     */
+    public void setTreeParams(int gracePeriod, double splitConfidence) {
+        if (gracePeriod < 1) throw new IllegalArgumentException("gracePeriod must be >= 1");
+        if (!(splitConfidence > 0.0 && splitConfidence < 1.0))
+            throw new IllegalArgumentException("splitConfidence must be in (0,1)");
+        boolean changed = gracePeriod != this.treeGracePeriod
+                || splitConfidence != this.treeSplitConfidence;
+        this.treeGracePeriod = gracePeriod;
+        this.treeSplitConfidence = splitConfidence;
+        if (changed) buildEnsemble();  // rebuild initial learners with the new tree config
+    }
+
     private void buildEnsemble() {
         ensemble = new BaseLearner[ensembleSize];
         for (int i = 0; i < ensembleSize; i++) ensemble[i] = newLearner(Set.of());
@@ -170,6 +232,12 @@ public class DAARFWrapper implements ModelWrapper {
     private ARFHoeffdingTree newTree(int dim, InstancesHeader header) {
         ARFHoeffdingTree t = new ARFHoeffdingTree();
         t.subspaceSizeOption.setValue(dim);
+        // A7: match MOA AdaptiveRandomForest's tree config so DA-ARF is not handicapped vs the
+        // ARF baseline it is compared to. HoeffdingTree defaults (grace=200, confidence=1e-7)
+        // build far too shallow trees -> majority-collapse on imbalanced streams (NHTS).
+        t.gracePeriodOption.setValue(treeGracePeriod);
+        t.splitConfidenceOption.setValue(treeSplitConfidence);
+        t.maxByteSizeOption.setValue(2000000);
         t.prepareForUse();
         t.setModelContext(header);
         return t;
@@ -320,6 +388,10 @@ public class DAARFWrapper implements ModelWrapper {
     }
 
     private void handleIntrinsicDrift(int idx, int err) {
+        // A4: intrinsic per-tree drift management fully disabled — external layer is
+        // the sole reset authority. Lets the ablation isolate which layer hurts.
+        if (!intrinsicDriftEnabled) return;
+
         BaseLearner bl = ensemble[idx];
         // Warning channel: spawn background on first warning.
         if (bl.warning != null) {
@@ -341,6 +413,7 @@ public class DAARFWrapper implements ModelWrapper {
                 bkgPromotions++;
             } else {
                 ensemble[idx] = newLearner(Set.of());
+                intrinsicFullResetCount++;
             }
         }
     }
@@ -356,6 +429,12 @@ public class DAARFWrapper implements ModelWrapper {
         int candidateCount = 0;
         for (int i = 0; i < ensembleSize; i++) {
             BaseLearner bl = ensemble[i];
+            // A3: do not fight the intrinsic mechanism — a learner already adapting via
+            // a pending background is left alone by the external pass.
+            if (gateExternalOnPendingBackground && bl.background != null) {
+                extGatedSkipCount++;
+                continue;
+            }
             int overlap = 0;
             for (int s : bl.subspace) if (unstable.contains(s)) overlap++;
             if (overlap > 0) {
@@ -367,15 +446,112 @@ public class DAARFWrapper implements ModelWrapper {
         int resetLimit = (int) Math.ceil(ensembleSize * externalResetFraction);
         resetLimit = Math.max(1, Math.min(resetLimit, candidateCount));
         boolean[] reset = chooseLowestAccuracyCandidates(candidate, resetLimit);
+        boolean[] driftMask = driftingMaskOf(unstable);
 
         for (int i = 0; i < ensembleSize; i++) {
             if (!reset[i]) {
                 extKeepCount++;
                 continue;
             }
-            ensemble[i] = newLearner(unstable);
-            extFullCount++;
+            if (externalActionMode == ExternalActionMode.SURGICAL) {
+                // A2: keep the trained tree, swap only the drifting features.
+                if (surgicalReplaceLearner(i, driftMask)) extSurgicalCount++;
+                else extNoReplacementCount++;
+            } else {
+                ensemble[i] = newLearner(unstable);
+                extFullCount++;
+            }
         }
+    }
+
+    private boolean[] driftingMaskOf(Set<Integer> unstable) {
+        boolean[] m = new boolean[origDim];
+        for (int u : unstable) if (u >= 0 && u < origDim) m[u] = true;
+        return m;
+    }
+
+    /**
+     * A2: replace only the drifting features inside a learner's subspace with the
+     * best-scoring, type-compatible non-drifting features, keeping the trained tree.
+     * Mirrors {@link DriftAwareSRP} surgical semantics. Returns true if a swap happened.
+     */
+    private boolean surgicalReplaceLearner(int idx, boolean[] driftingMask) {
+        BaseLearner bl = ensemble[idx];
+        double[] scores = (importance == null) ? null : importance.getImportance();
+        if (scores == null || scores.length != origDim) return false;
+        int[] newSub = surgicalReplaceSubspace(bl.subspace, driftingMask, scores);
+        if (Arrays.equals(newSub, bl.subspace)) return false;
+        // Re-point the projection to the new features; reduced header stays structurally
+        // identical (type-compatible swaps) so the tree's learned splits remain valid.
+        bl.subspace = newSub;
+        bl.reducedHeader = FilteredHeaderBuilder.build(space, newSub, "_daarf");
+        return true;
+    }
+
+    private int[] surgicalReplaceSubspace(int[] currentSub, boolean[] driftingMask, double[] scores) {
+        boolean[] inSub = new boolean[origDim];
+        for (int s : currentSub) if (s >= 0 && s < origDim) inSub[s] = true;
+
+        int candCount = 0;
+        for (int i = 0; i < origDim; i++) if (!inSub[i] && !driftingMask[i]) candCount++;
+        if (candCount == 0) return currentSub;
+        Integer[] cand = new Integer[candCount];
+        int c = 0;
+        for (int i = 0; i < origDim; i++) if (!inSub[i] && !driftingMask[i]) cand[c++] = i;
+        Arrays.sort(cand, (a, b) -> Double.compare(scoreAt(scores, b), scoreAt(scores, a)));
+
+        // Drifting positions in the subspace, weakest current score first.
+        int dpc = 0;
+        for (int i = 0; i < currentSub.length; i++) {
+            int s = currentSub[i];
+            if (s >= 0 && s < origDim && driftingMask[s]) dpc++;
+        }
+        Integer[] order = new Integer[dpc];
+        int o = 0;
+        for (int i = 0; i < currentSub.length; i++) {
+            int s = currentSub[i];
+            if (s >= 0 && s < origDim && driftingMask[s]) order[o++] = i;
+        }
+        Arrays.sort(order, (a, b) -> Double.compare(
+                scoreAt(scores, currentSub[a]), scoreAt(scores, currentSub[b])));
+
+        int[] result = currentSub.clone();
+        boolean[] used = new boolean[candCount];
+        for (Integer posObj : order) {
+            int pos = posObj;
+            int pick = -1;
+            for (int k = 0; k < candCount; k++) {
+                if (used[k]) continue;
+                int f = cand[k];
+                if (!sameAttrType(f, result[pos])) continue;
+                if (isAcceptableSurgical(scoreAt(scores, f), scoreAt(scores, result[pos]))) {
+                    pick = k;
+                    break;
+                }
+            }
+            if (pick < 0) continue;  // no acceptable type-compatible swap for this position
+            result[pos] = cand[pick];
+            used[pick] = true;
+        }
+        return result;
+    }
+
+    private boolean isAcceptableSurgical(double replacement, double current) {
+        if (!Double.isFinite(replacement)) return false;
+        if (!Double.isFinite(current)) return true;
+        return replacement >= current * surgicalReplacementTolerance;
+    }
+
+    private boolean sameAttrType(int a, int b) {
+        InstancesHeader h = space.getHeader();
+        return h.attribute(space.attrIndexOf(a)).isNumeric()
+                == h.attribute(space.attrIndexOf(b)).isNumeric();
+    }
+
+    private static double scoreAt(double[] scores, int idx) {
+        if (idx < 0 || idx >= scores.length) return Double.NEGATIVE_INFINITY;
+        double v = scores[idx];
+        return Double.isFinite(v) ? v : Double.NEGATIVE_INFINITY;
     }
 
     private boolean[] chooseLowestAccuracyCandidates(boolean[] candidate, int limit) {
@@ -461,6 +637,7 @@ public class DAARFWrapper implements ModelWrapper {
     public void reset() {
         buildEnsemble();
         instancesSeen = extKeepCount = extFullCount = bkgPromotions = warningCount = driftCount = 0;
+        extSurgicalCount = extNoReplacementCount = extGatedSkipCount = intrinsicFullResetCount = 0;
     }
 
     @Override

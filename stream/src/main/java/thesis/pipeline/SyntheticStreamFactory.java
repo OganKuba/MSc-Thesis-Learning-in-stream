@@ -13,6 +13,7 @@ import moa.options.OptionHandler;
 import moa.streams.ConceptDriftStream;
 import moa.streams.InstanceStream;
 import moa.streams.generators.HyperplaneGenerator;
+import moa.streams.generators.LEDGeneratorDrift;
 import moa.streams.generators.RandomRBFGeneratorDrift;
 import moa.streams.generators.SEAGenerator;
 import moa.streams.generators.STAGGERGenerator;
@@ -156,6 +157,26 @@ public final class SyntheticStreamFactory {
         s.functionOption.setValue(function);
         s.prepareForUse();
         return s;
+    }
+
+    /**
+     * LED with gradual drift — a natural feature-selection benchmark: 7 relevant segment
+     * attributes + 17 irrelevant (noise) attributes (24 total, 10 classes). {@code numDriftAttrs}
+     * of the 7 relevant attributes gradually drift. Not saturated (~74% Bayes-optimal at 10%
+     * noise), so it discriminates methods, and the 17 irrelevant attributes let us show whether
+     * the selector actually avoids noise.
+     */
+    public static InstanceStream createLEDDrift(int seed, int numDriftAttrs, int numInstances) {
+        if (numDriftAttrs < 0 || numDriftAttrs > 7) {
+            throw new IllegalArgumentException("numDriftAttrs must be in [0,7] (LED has 7 relevant attributes)");
+        }
+        LEDGeneratorDrift g = new LEDGeneratorDrift();
+        g.instanceRandomSeedOption.setValue(seed);
+        g.numberAttributesDriftOption.setValue(numDriftAttrs);
+        g.noisePercentageOption.setValue(10);
+        // suppressIrrelevantAttributesOption left OFF: keep the 17 irrelevant attributes.
+        g.prepareForUse();
+        return limit(g, numInstances);
     }
 
     public static InstanceStream createCustomFeatureDrift(int seed,

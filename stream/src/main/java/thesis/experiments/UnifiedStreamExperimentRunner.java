@@ -126,6 +126,14 @@ public final class UnifiedStreamExperimentRunner {
         public boolean daArfUseBackground = true;
         public double daArfWarningDelta = 1e-4;
         public double daArfDriftDelta = 1e-5;
+        public String daArfExternalMode = "RESET";   // A2: RESET | SURGICAL
+        public boolean daArfIntrinsicDrift = true;    // A4: disable intrinsic ADWIN when false
+        public boolean daArfGateExternal = false;     // A3: skip trees with pending background
+        public double daArfSubspaceFraction = 0.5;    // A6b: subspace = ceil(frac*d); <=0 -> ceil(sqrt(d)).
+                                                       // Default 0.5: tuned trees need a wider subspace than
+                                                       // ceil(sqrt(d)) or they overfit under continuous drift.
+        public int daArfTreeGracePeriod = 50;         // A7: base-tree grace period (MOA ARF = 50)
+        public double daArfTreeSplitConfidence = 0.01; // A7: base-tree split confidence (MOA ARF = 0.01)
     }
 
     public static final class Block {
@@ -256,6 +264,12 @@ public final class UnifiedStreamExperimentRunner {
             vs.daArfUseBackground   = v.path("daarf_use_background").asBoolean(vs.daArfUseBackground);
             vs.daArfWarningDelta    = v.path("daarf_warning_delta").asDouble(vs.daArfWarningDelta);
             vs.daArfDriftDelta      = v.path("daarf_drift_delta").asDouble(vs.daArfDriftDelta);
+            vs.daArfExternalMode    = v.path("daarf_external_mode").asText(vs.daArfExternalMode);
+            vs.daArfIntrinsicDrift  = v.path("daarf_intrinsic_drift").asBoolean(vs.daArfIntrinsicDrift);
+            vs.daArfGateExternal    = v.path("daarf_gate_external").asBoolean(vs.daArfGateExternal);
+            vs.daArfSubspaceFraction = v.path("daarf_subspace_fraction").asDouble(vs.daArfSubspaceFraction);
+            vs.daArfTreeGracePeriod = v.path("daarf_tree_grace_period").asInt(vs.daArfTreeGracePeriod);
+            vs.daArfTreeSplitConfidence = v.path("daarf_tree_split_confidence").asDouble(vs.daArfTreeSplitConfidence);
             return vs;
         }
     }
@@ -566,11 +580,14 @@ public final class UnifiedStreamExperimentRunner {
 
         private long runPrequentialLoop() {
             long effMax = effectiveMaxInstances(cfg, wi.ds);
-            long prevExtKeep = 0, prevExtFull = 0;
+            long prevExtKeep = 0, prevExtFull = 0, prevExtSurg = 0, prevIntrReset = 0, prevPromo = 0;
             DAARFWrapper daArf = (model instanceof DAARFWrapper) ? (DAARFWrapper) model : null;
             if (daArf != null) {
                 prevExtKeep = daArf.getExtKeepCount();
                 prevExtFull = daArf.getExtFullCount();
+                prevExtSurg = daArf.getExtSurgicalCount();
+                prevIntrReset = daArf.getIntrinsicFullResetCount();
+                prevPromo = daArf.getBkgPromotions();
             }
 
             long n = warmupCollected;
@@ -603,10 +620,18 @@ public final class UnifiedStreamExperimentRunner {
                 if (daArf != null) {
                     long curK = daArf.getExtKeepCount();
                     long curF = daArf.getExtFullCount();
-                    if (curK != prevExtKeep || curF != prevExtFull) {
-                        recorder.onDAARFEvent(n, curK - prevExtKeep, curF - prevExtFull);
+                    long curS = daArf.getExtSurgicalCount();
+                    long curI = daArf.getIntrinsicFullResetCount();
+                    long curP = daArf.getBkgPromotions();
+                    if (curK != prevExtKeep || curF != prevExtFull || curS != prevExtSurg
+                            || curI != prevIntrReset || curP != prevPromo) {
+                        recorder.onDAARFEvent(n, curK - prevExtKeep, curF - prevExtFull,
+                                curS - prevExtSurg, curI - prevIntrReset, curP - prevPromo);
                         prevExtKeep = curK;
                         prevExtFull = curF;
+                        prevExtSurg = curS;
+                        prevIntrReset = curI;
+                        prevPromo = curP;
                     }
                 }
             }
@@ -711,6 +736,10 @@ public final class UnifiedStreamExperimentRunner {
             case "CUSTOMFEATUREDRIFT":
             case "FEATUREDRIFT":
                 base = SyntheticStreamFactory.createCustomFeatureDrift(seed, ds.driftFeatures, ds.sigma, ds.n);
+                break;
+            case "LED":
+            case "LEDDRIFT":
+                base = SyntheticStreamFactory.createLEDDrift(seed, ds.driftFeatures, ds.n);
                 break;
             default: throw new IllegalArgumentException("Unknown generator: " + g);
         }
@@ -818,17 +847,31 @@ public final class UnifiedStreamExperimentRunner {
     private static DAARFWrapper newDAARF(VariantSpec v, FeatureSelector selector,
                                          InstancesHeader header, int numClasses,
                                          int seed, FeatureImportance importance) {
-        int sub = v.daArfSubspaceSize > 0
-                ? v.daArfSubspaceSize
-                : Math.max(2, (int) Math.ceil(Math.sqrt(header.numAttributes() - 1)));
+        int origDim = header.numAttributes() - 1;
+        int sub;
+        if (v.daArfSubspaceSize > 0) {
+            sub = v.daArfSubspaceSize;
+        } else if (v.daArfSubspaceFraction > 0.0) {
+            sub = Math.max(2, (int) Math.ceil(v.daArfSubspaceFraction * origDim));
+        } else {
+            sub = Math.max(2, (int) Math.ceil(Math.sqrt(origDim)));
+        }
+        sub = Math.min(sub, origDim);
         DAARFWrapper da = new DAARFWrapper(selector, header, numClasses,
                 v.ensembleSize, sub, v.lambda,
                 /*accWindow=*/1000, v.topKFraction,
                 v.importancePower, v.samplingBeta,
                 v.daArfUseBackground, v.daArfWarningDelta, v.daArfDriftDelta,
                 seed, importance);
+        da.setTreeParams(v.daArfTreeGracePeriod, v.daArfTreeSplitConfidence);
         da.setUnstableImportanceQuantile(v.unstableImportanceQuantile);
         da.setExternalResetFraction(v.daArfExternalResetFraction);
+        da.setSurgicalReplacementTolerance(v.surgicalReplacementTolerance);
+        da.setExternalActionMode("SURGICAL".equalsIgnoreCase(v.daArfExternalMode)
+                ? DAARFWrapper.ExternalActionMode.SURGICAL
+                : DAARFWrapper.ExternalActionMode.RESET);
+        da.setIntrinsicDriftEnabled(v.daArfIntrinsicDrift);
+        da.setGateExternalOnPendingBackground(v.daArfGateExternal);
         return da;
     }
 

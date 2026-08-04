@@ -234,16 +234,20 @@ public final class RunDetailedRecorder {
         adaptations.add(r);
     }
 
-    public void onDAARFEvent(long instanceIndex, long extKeepDelta, long extFullDelta) {
+    public void onDAARFEvent(long instanceIndex, long extKeepDelta, long extFullDelta,
+                             long extSurgicalDelta, long intrinsicResetDelta,
+                             long promotionDelta) {
         AdaptationRow r = new AdaptationRow();
         r.instanceIndex = instanceIndex;
-        r.eventType = "da_arf_ext";
-        r.keptCount = 0;
-        r.surgicalCount = 0;
-        r.fullReplacementCount = 0;
+        r.eventType = "da_arf";
+        // A1: intrinsic resets go to full_replacement, external resets to ext_full,
+        // so the two reset channels stay separable in adaptation_events.csv.
+        r.keptCount = promotionDelta;            // intrinsic: background promotions
+        r.surgicalCount = extSurgicalDelta;      // A2: external surgical swaps
+        r.fullReplacementCount = intrinsicResetDelta;  // intrinsic: full resets (no background)
         r.noReplacementCount = 0;
-        r.extKeepCount = extKeepDelta;
-        r.extFullCount = extFullDelta;
+        r.extKeepCount = extKeepDelta;           // external: learners kept
+        r.extFullCount = extFullDelta;           // external: full resets
         adaptations.add(r);
     }
 
