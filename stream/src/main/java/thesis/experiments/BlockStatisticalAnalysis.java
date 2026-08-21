@@ -42,9 +42,17 @@ public final class BlockStatisticalAnalysis {
     public enum Metric {
         ACCURACY("accuracy", true),
         KAPPA("kappa", true),
-        KAPPA_PER("kappa_per", true),
-        TEMPORAL_KAPPA("temporal_kappa", true),
+        // Temporal kappa, averaged over all windows of the run. The old enum also carried
+        // KAPPA_PER, which was the very same TemporalKappa measured in the final window only —
+        // so every block produced two independent rank tables and CD diagrams for one metric.
+        // The windowed aggregation is kept because it uses the whole run rather than its last
+        // 1000 instances.
+        KAPPA_TEMPORAL("kappa_temporal", true),
         RECOVERY_TIME("recovery_time", false),
+        // Depth of the post-alarm accuracy dip. Unlike recovery_time this is defined even when a
+        // variant never recovers (or never degrades), so the Friedman test keeps its full set of
+        // datasets instead of dropping to the handful where some episode happened to close.
+        RECOVERY_MAX_DROP("recovery_max_drop", false),
         RAM_HOURS_GB("ram_hours_gb", false);
 
         public final String csvName;
@@ -230,7 +238,7 @@ public final class BlockStatisticalAnalysis {
         }
 
         // 6. cd_diagram.* — written even if Nemenyi unavailable (cd_diagram.csv records ranks only).
-        writeCDDiagram(outDir, blockId, m, variants, fr, nem, cdCsvW);
+        writeCDDiagram(outDir, blockId, m, variants, usableDatasets, fr, nem, cdCsvW);
 
         // 7. Wilcoxon — pair variants on aligned (dataset, seed) vectors. Holm-adjust within metric.
         runWilcoxonAndWrite(blockId, m, variants, byVariant, wilcoxonW);
@@ -245,9 +253,10 @@ public final class BlockStatisticalAnalysis {
         switch (m) {
             case ACCURACY:       return r.accuracy;
             case KAPPA:          return r.kappa;
-            case KAPPA_PER:      return r.kappaPer;
-            case TEMPORAL_KAPPA: return ra.recorder == null ? Double.NaN : ra.recorder.meanTemporalKappa();
+            case KAPPA_TEMPORAL: return ra.recorder == null
+                    ? Double.NaN : ra.recorder.meanWindowedTemporalKappa();
             case RECOVERY_TIME:  return ra.recorder == null ? Double.NaN : ra.recorder.meanRecoveryLength();
+            case RECOVERY_MAX_DROP: return ra.recorder == null ? Double.NaN : ra.recorder.meanMaxDrop();
             case RAM_HOURS_GB:   return r.ramHoursGB;
             default: return Double.NaN;
         }
@@ -356,7 +365,14 @@ public final class BlockStatisticalAnalysis {
     // CD diagram writers (CSV + SVG + TeX)
     // ------------------------------------------------------------------------
 
+    /**
+     * @param usableDatasets dataset names in the same order as the rows of the Friedman matrix,
+     *                       so {@code rank_matrix_*.csv} can name them instead of emitting
+     *                       placeholders. The rank matrix is otherwise unreadable: a reader
+     *                       cannot tell which stream a row of ranks belongs to.
+     */
     private void writeCDDiagram(Path outDir, String blockId, Metric m, List<String> variants,
+                                List<String> usableDatasets,
                                 FriedmanTest.Result fr, NemenyiPostHoc.Result nem,
                                 PrintWriter cdCsvW) throws IOException {
         double cd = nem == null ? Double.NaN : nem.criticalDifference;
@@ -380,10 +396,14 @@ public final class BlockStatisticalAnalysis {
         CDDiagramExporter.writeRanks(outDir.resolve("avg_ranks_" + m.csvName + ".csv"),
                 variants, ranks, cd, nd, alpha);
         if (fr.ranks != null) {
-            // Build dataset names list of length fr.numDatasets — use the placeholder D1..Dn since
-            // the per-dataset ordering isn't carried through after the Friedman matrix is built.
+            // Real dataset names, in Friedman-matrix row order. Falls back to D1..Dn only if the
+            // two ever disagree in length, which would signal a bug rather than missing data.
             List<String> dsNames = new ArrayList<>();
-            for (int i = 0; i < fr.numDatasets; i++) dsNames.add("D" + (i + 1));
+            if (usableDatasets != null && usableDatasets.size() == fr.numDatasets) {
+                dsNames.addAll(usableDatasets);
+            } else {
+                for (int i = 0; i < fr.numDatasets; i++) dsNames.add("D" + (i + 1));
+            }
             CDDiagramExporter.writeRankMatrix(outDir.resolve("rank_matrix_" + m.csvName + ".csv"),
                     dsNames, variants, fr.ranks);
         }

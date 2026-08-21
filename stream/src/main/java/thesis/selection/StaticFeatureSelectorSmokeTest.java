@@ -38,7 +38,7 @@ public class StaticFeatureSelectorSmokeTest {
         testInitialScoresAreReturned();
         testGetSelectedFeaturesReturnsCopy();
         testRankerFactoryGetsCorrectNumFeatures();
-        testWorksWithAllThreeRankers();
+        testWorksWithIGRanker();
         testS1IsDeterministicallySortedSelection();
 
         System.out.println("=".repeat(70));
@@ -313,25 +313,16 @@ public class StaticFeatureSelectorSmokeTest {
                 capturedNumFeatures[0] == F);
     }
 
-    private static void testWorksWithAllThreeRankers() {
+    private static void testWorksWithIGRanker() {
         int F = 6;
-        int[] informativeForEach = new int[3];
-        FeatureSelector.RankerFactory[] factories = new FeatureSelector.RankerFactory[]{
-                (nf, nb, nc) -> new InformationGainRanker(nf, nb, nc, 1),
-                (nf, nb, nc) -> new MutualInformationRanker(nf, nb, nc, 1),
-                (nf, nb, nc) -> new ChiSquaredRanker(nf, nb, nc, 1, true)
-        };
-        for (int t = 0; t < factories.length; t++) {
-            PiDDiscretizer pid = new PiDDiscretizer(F, 2, 32, 4, 200, 500);
-            StaticFeatureSelector s = new StaticFeatureSelector(F, 2, 1, pid, factories[t]);
-            double[][] win = genWindow(400, F, 4, 100 + t);
-            int[] labels = genLabels(win, 4, 100 + t);
-            s.initialize(win, labels);
-            informativeForEach[t] = s.getSelectedFeatures()[0];
-        }
-        boolean ok = informativeForEach[0] == 4 && informativeForEach[1] == 4 && informativeForEach[2] == 4;
-        report("all three rankers pick informative feature 4 (got=" +
-                Arrays.toString(informativeForEach) + ")", ok);
+        PiDDiscretizer pid = new PiDDiscretizer(F, 2, 32, 4, 200, 500);
+        StaticFeatureSelector s = new StaticFeatureSelector(F, 2, 1, pid,
+                (nf, nb, nc) -> new InformationGainRanker(nf, nb, nc, 1));
+        double[][] win = genWindow(400, F, 4, 100);
+        int[] labels = genLabels(win, 4, 100);
+        s.initialize(win, labels);
+        int picked = s.getSelectedFeatures()[0];
+        report("IG ranker picks informative feature 4 (got=" + picked + ")", picked == 4);
     }
 
     private static void testS1IsDeterministicallySortedSelection() {

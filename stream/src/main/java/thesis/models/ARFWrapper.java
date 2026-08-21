@@ -11,12 +11,16 @@ import java.util.Set;
 
 public class ARFWrapper implements ModelWrapper {
 
+    /** MOA's own default ({@code AbstractClassifier.randomSeedOption}) — keeps legacy behaviour. */
+    public static final int DEFAULT_SEED = 1;
+
     @Getter private final FeatureSelector selector;
     private final FeatureSpace space;
     @Getter private final int ensembleSize;
     @Getter private final double lambda;
     @Getter private final boolean resetOnSelectionChange;
     @Getter private final boolean useHardFilter;
+    @Getter private final int seed;
 
     private AdaptiveRandomForest arf;
     private InstancesHeader reducedHeader;
@@ -25,17 +29,25 @@ public class ARFWrapper implements ModelWrapper {
     private static final boolean DIAG = Boolean.getBoolean("thesis.diag");
 
     public ARFWrapper(FeatureSelector selector, InstancesHeader fullHeader) {
-        this(selector, fullHeader, 10, 6.0, false, true);
+        this(selector, fullHeader, 10, 6.0, false, true, DEFAULT_SEED);
     }
 
     public ARFWrapper(FeatureSelector selector, InstancesHeader fullHeader,
                       int ensembleSize, double lambda, boolean resetOnSelectionChange) {
-        this(selector, fullHeader, ensembleSize, lambda, resetOnSelectionChange, true);
+        this(selector, fullHeader, ensembleSize, lambda, resetOnSelectionChange, true, DEFAULT_SEED);
     }
 
     public ARFWrapper(FeatureSelector selector, InstancesHeader fullHeader,
                       int ensembleSize, double lambda,
                       boolean resetOnSelectionChange, boolean useHardFilter) {
+        this(selector, fullHeader, ensembleSize, lambda, resetOnSelectionChange, useHardFilter,
+                DEFAULT_SEED);
+    }
+
+    public ARFWrapper(FeatureSelector selector, InstancesHeader fullHeader,
+                      int ensembleSize, double lambda,
+                      boolean resetOnSelectionChange, boolean useHardFilter,
+                      int seed) {
         if (selector == null) throw new IllegalArgumentException("selector must not be null");
         if (fullHeader == null) throw new IllegalArgumentException("fullHeader must not be null");
         if (!selector.isInitialized())
@@ -48,6 +60,7 @@ public class ARFWrapper implements ModelWrapper {
         this.lambda = lambda;
         this.resetOnSelectionChange = resetOnSelectionChange;
         this.useHardFilter = useHardFilter;
+        this.seed = seed;
         if (!useHardFilter && DIAG) {
             System.err.println("[ARFWrapper][WARN] useHardFilter=false → ARF sees FULL d features.");
         }
@@ -62,6 +75,10 @@ public class ARFWrapper implements ModelWrapper {
         } catch (Exception e) {
             throw new IllegalStateException("ARF option 'a' (lambda) not available", e);
         }
+        // Must precede prepareForUse(): AbstractClassifier.resetLearning() seeds classifierRandom
+        // from randomSeedOption there. Without this every run shares MOA's default seed, so the
+        // 5 configured seeds collapse to 5 identical runs on deterministic (ARFF) streams.
+        a.setRandomSeed(seed);
         a.prepareForUse();
         return a;
     }
@@ -123,8 +140,9 @@ public class ARFWrapper implements ModelWrapper {
 
     @Override public int[] getCurrentSelection() { return cachedSelection.clone(); }
     @Override public void reset() { rebuild(); }
+    @Override public long modelByteSize() { return ModelSize.of(arf); }
     @Override public String name() {
         return "ARF(size=" + ensembleSize + ", lambda=" + lambda
-                + ", hardFilter=" + useHardFilter + ") + " + selector.name();
+                + ", hardFilter=" + useHardFilter + ", seed=" + seed + ") + " + selector.name();
     }
 }

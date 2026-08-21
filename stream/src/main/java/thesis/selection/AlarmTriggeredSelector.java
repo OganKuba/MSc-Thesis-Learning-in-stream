@@ -40,6 +40,11 @@ public class AlarmTriggeredSelector implements FeatureSelector {
     @Getter private long updatesBeforeInit;
 
     private EventListener listener;
+    /** Set to "drift_alarm" once a post-alarm re-selection completes; see FeatureSelector. */
+    private String lastSelectionTrigger = "initial";
+
+    @Override
+    public String lastSelectionTrigger() { return lastSelectionTrigger; }
 
     public AlarmTriggeredSelector(int numFeatures, int numClasses) {
         this(numFeatures, numClasses,
@@ -194,6 +199,7 @@ public class AlarmTriggeredSelector implements FeatureSelector {
                 collecting = false;
                 collected = 0;
                 reSelections++;
+                lastSelectionTrigger = "drift_alarm";
                 boolean changed = !Arrays.equals(oldSel, selection);
                 if (listener != null) {
                     listener.onReSelection(oldSel, selection.clone(),

@@ -5,7 +5,7 @@ import thesis.selection.FeatureSelector;
 
 import java.util.Set;
 
-public interface ModelWrapper {
+public interface  ModelWrapper {
 
     double[] predictProba(Instance full);
 
@@ -21,6 +21,13 @@ public interface ModelWrapper {
     int[] getCurrentSelection();
 
     void reset();
+
+    /**
+     * Deep size of the learned model in bytes, for the RAM-Hours metric, or
+     * {@link ModelSize#UNAVAILABLE} when the {@code sizeofag} agent is not loaded.
+     * Implementations must report the <b>model only</b> — not the selector, header or JVM heap.
+     */
+    default long modelByteSize() { return ModelSize.UNAVAILABLE; }
 
     default String name() { return getClass().getSimpleName(); }
 }

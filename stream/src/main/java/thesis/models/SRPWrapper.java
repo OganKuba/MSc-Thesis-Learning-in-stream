@@ -21,12 +21,16 @@ public class SRPWrapper implements ModelWrapper {
             "indices", "subSpaceIndices", "subspaceIndices"
     };
 
+    /** MOA's own default ({@code AbstractClassifier.randomSeedOption}) — keeps legacy behaviour. */
+    public static final int DEFAULT_SEED = 1;
+
     @Getter private final FeatureSelector selector;
     private final FeatureSpace space;
     @Getter private final int ensembleSize;
     @Getter private final double lambda;
     @Getter private final boolean resetOnSelectionChange;
     @Getter private final boolean useHardFilter;
+    @Getter private final int seed;
 
     private StreamingRandomPatches srp;
     private InstancesHeader reducedHeader;
@@ -35,19 +39,28 @@ public class SRPWrapper implements ModelWrapper {
     private static final boolean DIAG = Boolean.getBoolean("thesis.diag");
 
     public SRPWrapper(FeatureSelector selector, InstancesHeader fullHeader) {
-        this(selector, fullHeader, 10, 6.0, false, true);
+        this(selector, fullHeader, 10, 6.0, false, true, DEFAULT_SEED);
     }
 
     public SRPWrapper(FeatureSelector selector, InstancesHeader fullHeader,
                       int ensembleSize, double lambda,
                       boolean resetOnSelectionChange) {
-        this(selector, fullHeader, ensembleSize, lambda, resetOnSelectionChange, true);
+        this(selector, fullHeader, ensembleSize, lambda, resetOnSelectionChange, true, DEFAULT_SEED);
     }
 
     public SRPWrapper(FeatureSelector selector, InstancesHeader fullHeader,
                       int ensembleSize, double lambda,
                       boolean resetOnSelectionChange,
                       boolean useHardFilter) {
+        this(selector, fullHeader, ensembleSize, lambda, resetOnSelectionChange, useHardFilter,
+                DEFAULT_SEED);
+    }
+
+    public SRPWrapper(FeatureSelector selector, InstancesHeader fullHeader,
+                      int ensembleSize, double lambda,
+                      boolean resetOnSelectionChange,
+                      boolean useHardFilter,
+                      int seed) {
         if (selector == null) throw new IllegalArgumentException("selector must not be null");
         if (fullHeader == null) throw new IllegalArgumentException("fullHeader must not be null");
         if (!selector.isInitialized())
@@ -60,6 +73,7 @@ public class SRPWrapper implements ModelWrapper {
         this.lambda = lambda;
         this.resetOnSelectionChange = resetOnSelectionChange;
         this.useHardFilter = useHardFilter;
+        this.seed = seed;
         if (!useHardFilter && DIAG) {
             System.err.println("[SRPWrapper][WARN] useHardFilter=false → SRP sees FULL d features, "
                     + "FeatureSelector will NOT change model input. Use only for ablation.");
@@ -72,6 +86,10 @@ public class SRPWrapper implements ModelWrapper {
         s.ensembleSizeOption.setValue(ensembleSize);
         trySetCli(s, 'a', String.valueOf(lambda));
         trySetCli(s, 'o', "randompatches");
+        // Must precede prepareForUse(): AbstractClassifier.resetLearning() seeds classifierRandom
+        // from randomSeedOption there. Without this every run shares MOA's default seed, so the
+        // 5 configured seeds collapse to 5 identical runs on deterministic (ARFF) streams.
+        s.setRandomSeed(seed);
         s.prepareForUse();
         return s;
     }
@@ -223,8 +241,9 @@ public class SRPWrapper implements ModelWrapper {
 
     @Override public int[] getCurrentSelection() { return cachedSelection.clone(); }
     @Override public void reset() { rebuild(); }
+    @Override public long modelByteSize() { return ModelSize.of(srp); }
     @Override public String name() {
         return "SRP(size=" + ensembleSize + ", lambda=" + lambda
-                + ", hardFilter=" + useHardFilter + ") + " + selector.name();
+                + ", hardFilter=" + useHardFilter + ", seed=" + seed + ") + " + selector.name();
     }
 }

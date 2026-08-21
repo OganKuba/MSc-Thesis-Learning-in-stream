@@ -11,23 +11,34 @@ import java.util.Set;
 
 public class HoeffdingTreeWrapper implements ModelWrapper {
 
+    /** MOA's own default ({@code AbstractClassifier.randomSeedOption}) — keeps legacy behaviour. */
+    public static final int DEFAULT_SEED = 1;
+
     @Getter private final FeatureSelector selector;
     private final FeatureSpace space;
     @Getter private final int gracePeriod;
     @Getter private final double splitConfidence;
     @Getter private final boolean resetOnSelectionChange;
+    @Getter private final int seed;
 
     private HoeffdingTree tree;
     private InstancesHeader reducedHeader;
     private int[] cachedSelection;
 
     public HoeffdingTreeWrapper(FeatureSelector selector, InstancesHeader fullHeader) {
-        this(selector, fullHeader, 200, 0.01, false);
+        this(selector, fullHeader, 200, 0.01, false, DEFAULT_SEED);
     }
 
     public HoeffdingTreeWrapper(FeatureSelector selector, InstancesHeader fullHeader,
                                 int gracePeriod, double splitConfidence,
                                 boolean resetOnSelectionChange) {
+        this(selector, fullHeader, gracePeriod, splitConfidence, resetOnSelectionChange,
+                DEFAULT_SEED);
+    }
+
+    public HoeffdingTreeWrapper(FeatureSelector selector, InstancesHeader fullHeader,
+                                int gracePeriod, double splitConfidence,
+                                boolean resetOnSelectionChange, int seed) {
         if (selector == null) throw new IllegalArgumentException("selector must not be null");
         if (fullHeader == null) throw new IllegalArgumentException("fullHeader must not be null");
         if (!selector.isInitialized()) {
@@ -42,6 +53,7 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
         this.gracePeriod = gracePeriod;
         this.splitConfidence = splitConfidence;
         this.resetOnSelectionChange = resetOnSelectionChange;
+        this.seed = seed;
         rebuild();
     }
 
@@ -49,6 +61,11 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
         HoeffdingTree t = new HoeffdingTree();
         t.gracePeriodOption.setValue(gracePeriod);
         t.splitConfidenceOption.setValue(splitConfidence);
+        // Accepted for API symmetry with ARF/SRP, but a no-op in practice: MOA's HoeffdingTree
+        // reports isRandomizable()=false, so randomSeedOption is null and training is fully
+        // deterministic. HT therefore yields identical results across seeds on a fixed stream —
+        // that is correct algorithm behaviour, not the seed-propagation bug ARF/SRP had.
+        t.setRandomSeed(seed);
         t.prepareForUse();
         return t;
     }
@@ -110,7 +127,11 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
     public void reset() { rebuild(); }
 
     @Override
+    public long modelByteSize() { return ModelSize.of(tree); }
+
+    @Override
     public String name() {
-        return "HoeffdingTree(gp=" + gracePeriod + ", sc=" + splitConfidence + ") + " + selector.name();
+        return "HoeffdingTree(gp=" + gracePeriod + ", sc=" + splitConfidence
+                + ", seed=" + seed + ") + " + selector.name();
     }
 }

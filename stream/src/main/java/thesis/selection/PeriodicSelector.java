@@ -10,6 +10,13 @@ import java.util.Set;
 
 public class PeriodicSelector implements FeatureSelector {
 
+    /** Periodic re-selection is this selector's only trigger. */
+    private String lastSelectionTrigger = "initial";
+
+    @Override
+    public String lastSelectionTrigger() { return lastSelectionTrigger; }
+
+
     public interface EventListener {
         void onPeriodicTick(long instanceNum, boolean triggered);
         void onReSelection(long instanceNum,
@@ -223,6 +230,7 @@ public class PeriodicSelector implements FeatureSelector {
             for (int f : newSet) newSelection[idx++] = f;
             Arrays.sort(newSelection);
             this.selection = newSelection;
+            this.lastSelectionTrigger = "periodic";
             this.swapEvents++;
             this.swappedFeatures += swaps;
         }

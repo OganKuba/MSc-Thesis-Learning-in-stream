@@ -633,6 +633,28 @@ public class DAARFWrapper implements ModelWrapper {
         return out;
     }
 
+    /**
+     * Sum over every live tree: each foreground learner plus any pending background learner
+     * (a background tree is real, resident memory and must be charged to the model).
+     */
+    @Override
+    public long modelByteSize() {
+        long total = 0L;
+        for (int i = 0; i < ensembleSize; i++) {
+            BaseLearner bl = ensemble[i];
+            if (bl == null) continue;
+            long fg = ModelSize.of(bl.tree);
+            if (fg < 0L) return ModelSize.UNAVAILABLE;
+            total += fg;
+            if (bl.background != null) {
+                long bg = ModelSize.of(bl.background.tree);
+                if (bg < 0L) return ModelSize.UNAVAILABLE;
+                total += bg;
+            }
+        }
+        return total;
+    }
+
     @Override
     public void reset() {
         buildEnsemble();

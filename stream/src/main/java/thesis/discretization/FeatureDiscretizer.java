@@ -12,7 +12,6 @@ public class FeatureDiscretizer {
     private final int numClasses;
     private final int warmupN;
     private final double expandThreshold;
-    private final double decayFactor;
 
     private boolean ready;
     private double[] warmupBuffer;
@@ -26,25 +25,22 @@ public class FeatureDiscretizer {
     private long expansions;
 
     public FeatureDiscretizer(int b1, int b2, int numClasses, int warmupN) {
-        this(b1, b2, numClasses, warmupN, 0.20, 1.0);
+        this(b1, b2, numClasses, warmupN, 0.20);
     }
 
     public FeatureDiscretizer(int b1, int b2, int numClasses, int warmupN,
-                              double expandThreshold, double decayFactor) {
+                              double expandThreshold) {
         if (b1 < 4) throw new IllegalArgumentException("b1 must be >= 4");
         if (b2 < 2 || b2 > b1) throw new IllegalArgumentException("require 2 <= b2 <= b1");
         if (numClasses < 2) throw new IllegalArgumentException("numClasses must be >= 2");
         if (warmupN < b1) throw new IllegalArgumentException("warmupN must be >= b1");
         if (!(expandThreshold > 0.0 && expandThreshold < 1.0))
             throw new IllegalArgumentException("expandThreshold must be in (0,1)");
-        if (!(decayFactor > 0.0 && decayFactor <= 1.0))
-            throw new IllegalArgumentException("decayFactor must be in (0,1]");
         this.b1 = b1;
         this.b2 = b2;
         this.numClasses = numClasses;
         this.warmupN = warmupN;
         this.expandThreshold = expandThreshold;
-        this.decayFactor = decayFactor;
         reset();
     }
 
@@ -119,7 +115,6 @@ public class FeatureDiscretizer {
 
     public void recomputeLayer2() {
         if (!ready) return;
-        if (decayFactor < 1.0) l1.decay(decayFactor);
         l1ToL2 = Layer2Merger.merge(l1.getBinCounts(), l1.getClassCounts(), b2, numClasses);
         updatesSinceRecompute = 0;
     }

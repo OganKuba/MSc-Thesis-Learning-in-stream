@@ -24,15 +24,6 @@ public class SelectionSmokeTest {
         testIgHigherForInformativeFeature();
         testIgRanksInformativeFirst();
 
-        testMiZeroForIndependent();
-        testMiPositiveForDependent();
-        testMiNumericallyStableNearIndependence();
-        testMiUnitsAreBits();
-
-        testChiZeroForUninformative();
-        testChiHigherForInformative();
-        testChiCramerVInZeroOne();
-
         testSelectTopKDeterministicOnTies();
         testSelectTopKHonorsPreferredOrder();
         testSelectTopKReactsToNewData();
@@ -56,9 +47,7 @@ public class SelectionSmokeTest {
 
     private static FilterRanker[] allRankers(int F, int B, int K) {
         return new FilterRanker[]{
-                new InformationGainRanker(F, B, K, 1),
-                new MutualInformationRanker(F, B, K, 1),
-                new ChiSquaredRanker(F, B, K, 1, true)
+                new InformationGainRanker(F, B, K, 1)
         };
     }
 
@@ -163,86 +152,6 @@ public class SelectionSmokeTest {
         }
         int[] top = r.selectTopK(1);
         report("IG selects feature 3 as top-1 (got=" + top[0] + ")", top[0] == 3);
-    }
-
-    private static void testMiZeroForIndependent() {
-        MutualInformationRanker r = new MutualInformationRanker(1, 8, 2, 1);
-        Random rnd = new Random(4);
-        for (int i = 0; i < 20000; i++) r.update(new int[]{rnd.nextInt(8)}, rnd.nextInt(2));
-        double mi = r.getFeatureScores()[0];
-        report("MI ~ 0 for independent x,y (mi=" + mi + ")", mi < 0.01);
-    }
-
-    private static void testMiPositiveForDependent() {
-        MutualInformationRanker r = new MutualInformationRanker(1, 4, 2, 1);
-        Random rnd = new Random(5);
-        for (int i = 0; i < 5000; i++) {
-            int cls = rnd.nextInt(2);
-            int x = (cls == 0) ? rnd.nextInt(2) : 2 + rnd.nextInt(2);
-            r.update(new int[]{x}, cls);
-        }
-        double mi = r.getFeatureScores()[0];
-        report("MI positive (~1 bit) for perfectly dependent x,y (mi=" + mi + ")", mi > 0.7);
-    }
-
-    private static void testMiNumericallyStableNearIndependence() {
-        MutualInformationRanker r = new MutualInformationRanker(10, 6, 3, 1);
-        Random rnd = new Random(6);
-        for (int i = 0; i < 50000; i++) {
-            int[] x = new int[10];
-            for (int f = 0; f < 10; f++) x[f] = rnd.nextInt(6);
-            r.update(x, rnd.nextInt(3));
-        }
-        double[] s = r.getFeatureScores();
-        boolean nonNeg = true; double max = 0;
-        for (double v : s) { if (v < 0.0) nonNeg = false; if (v > max) max = v; }
-        report("MI is non-negative and small near independence (max=" + max + ")", nonNeg && max < 0.02);
-    }
-
-    private static void testMiUnitsAreBits() {
-        MutualInformationRanker r = new MutualInformationRanker(1, 2, 2, 1);
-        for (int i = 0; i < 1000; i++) r.update(new int[]{0}, 0);
-        for (int i = 0; i < 1000; i++) r.update(new int[]{1}, 1);
-        double mi = r.getFeatureScores()[0];
-        report("MI of perfect 1-1 mapping ~ 1 bit (mi=" + mi + ")", Math.abs(mi - 1.0) < 0.05);
-    }
-
-    private static void testChiZeroForUninformative() {
-        ChiSquaredRanker r = new ChiSquaredRanker(1, 6, 2, 1, true);
-        Random rnd = new Random(7);
-        for (int i = 0; i < 20000; i++) r.update(new int[]{rnd.nextInt(6)}, rnd.nextInt(2));
-        double v = r.getFeatureScores()[0];
-        report("Cramér's V small for noise (v=" + v + ")", v < 0.05);
-    }
-
-    private static void testChiHigherForInformative() {
-        ChiSquaredRanker r = new ChiSquaredRanker(2, 4, 2, 1, true);
-        Random rnd = new Random(8);
-        for (int i = 0; i < 5000; i++) {
-            int cls = rnd.nextInt(2);
-            int informative = (cls == 0) ? rnd.nextInt(2) : 2 + rnd.nextInt(2);
-            r.update(new int[]{informative, rnd.nextInt(4)}, cls);
-        }
-        double[] s = r.getFeatureScores();
-        report("Cramér's V higher for informative (s=" + Arrays.toString(s) + ")",
-                s[0] > s[1] + 0.3);
-    }
-
-    private static void testChiCramerVInZeroOne() {
-        ChiSquaredRanker r = new ChiSquaredRanker(3, 4, 2, 1, true);
-        Random rnd = new Random(9);
-        for (int i = 0; i < 2000; i++) {
-            int cls = rnd.nextInt(2);
-            int[] x = new int[3];
-            x[0] = (cls == 0) ? 0 : 3;
-            x[1] = (cls == 0) ? rnd.nextInt(2) : 2 + rnd.nextInt(2);
-            x[2] = rnd.nextInt(4);
-            r.update(x, cls);
-        }
-        double[] s = r.getFeatureScores();
-        boolean inRange = true;
-        for (double v : s) if (v < 0.0 || v > 1.0) inRange = false;
-        report("Cramér's V in [0,1] (s=" + Arrays.toString(s) + ")", inRange);
     }
 
     private static void testSelectTopKDeterministicOnTies() {

@@ -256,14 +256,13 @@ public class DiscretizationSmokeTest {
     }
 
     private static void testFeatureDiscretizerRejectsBadParams() {
-        boolean t1=false,t2=false,t3=false,t4=false,t5=false,t6=false;
+        boolean t1=false,t2=false,t3=false,t4=false,t5=false;
         try { new FeatureDiscretizer(3, 2, 2, 100); } catch (IllegalArgumentException e) { t1=true; }
         try { new FeatureDiscretizer(10, 1, 2, 100); } catch (IllegalArgumentException e) { t2=true; }
         try { new FeatureDiscretizer(10, 4, 1, 100); } catch (IllegalArgumentException e) { t3=true; }
         try { new FeatureDiscretizer(10, 4, 2, 5); } catch (IllegalArgumentException e) { t4=true; }
-        try { new FeatureDiscretizer(10,4,2,100, 0.0, 1.0); } catch (IllegalArgumentException e) { t5=true; }
-        try { new FeatureDiscretizer(10,4,2,100, 0.2, 0.0); } catch (IllegalArgumentException e) { t6=true; }
-        report("FeatureDiscretizer rejects invalid params", t1&&t2&&t3&&t4&&t5&&t6);
+        try { new FeatureDiscretizer(10,4,2,100, 0.0); } catch (IllegalArgumentException e) { t5=true; }
+        report("FeatureDiscretizer rejects invalid params", t1&&t2&&t3&&t4&&t5);
     }
 
     private static void testPiDDiscretizerUpdatesAllFeatures() {
@@ -358,7 +357,7 @@ public class DiscretizationSmokeTest {
 
     private static void testPiDRankingChangesAfterDriftWhenSoftReset() {
         int F = 4;
-        PiDDiscretizer p = new PiDDiscretizer(F, 2, 32, 8, 300, 200, 0.20, 1.0);
+        PiDDiscretizer p = new PiDDiscretizer(F, 2, 32, 8, 300, 200, 0.20);
         Random r = new Random(123);
         for (int t = 0; t < 3000; t++) {
             int cls = r.nextInt(2);
@@ -405,7 +404,7 @@ public class DiscretizationSmokeTest {
     }
 
     private static void testPiDDoesNotDegenerateUnderTrend() {
-        PiDDiscretizer p = new PiDDiscretizer(1, 2, 32, 6, 300, 500, 0.20, 1.0);
+        PiDDiscretizer p = new PiDDiscretizer(1, 2, 32, 6, 300, 500, 0.20);
         Random r = new Random(321);
         for (int t = 0; t < 5000; t++) {
             double trend = t * 0.01;
@@ -425,7 +424,7 @@ public class DiscretizationSmokeTest {
 
     private static void testPiDOnDriftAlarmAppliesOnlyToDriftingFeatures() {
         int F = 3;
-        PiDDiscretizer p = new PiDDiscretizer(F, 2, 16, 4, 100, 500, 0.20, 1.0);
+        PiDDiscretizer p = new PiDDiscretizer(F, 2, 16, 4, 100, 500, 0.20);
         Random r = new Random(7);
         for (int t = 0; t < 1000; t++) {
             double[] v = new double[F]; for (int i = 0; i < F; i++) v[i] = r.nextGaussian();

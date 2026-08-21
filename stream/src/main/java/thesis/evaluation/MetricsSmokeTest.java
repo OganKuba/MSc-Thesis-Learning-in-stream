@@ -31,6 +31,9 @@ public class MetricsSmokeTest {
         testRamHoursMonotone();
         testRamHoursPeakMB();
         testRamHoursNegativeSampleClampedNotThrown();
+        testRamHoursModelSizeAccumulates();
+        testRamHoursUnmeasurableModelYieldsNaN();
+        testCollectorUsesModelSizeSupplier();
         testCollectorRunSurvivesNegativeRamSample();
 
         testCollectorWindowedNotCumulative();
@@ -206,6 +209,43 @@ public class MetricsSmokeTest {
                         && Double.isFinite(r.getRamHours())
                         && r.getRamHours() >= 0.0
                         && Math.abs(r.getPeakMB() - 150.0) < 1e-6);
+    }
+
+    // --- model-size RAM-Hours path (replaces whole-JVM sampling) -------------------------------
+
+    private static void testRamHoursModelSizeAccumulates() {
+        RAMHours r = new RAMHours();
+        r.start();
+        r.sampleModelSize(90L * 1024);          // ~90 KB, a realistic 10-tree ensemble
+        try { Thread.sleep(5); } catch (InterruptedException ignored) { }
+        r.sampleModelSize(95L * 1024);
+        report("RAMHours.sampleModelSize accumulates and tracks peak (peakMB="
+                        + r.getPeakMB() + ", rh=" + r.getRamHours() + ")",
+                !r.isUnavailable()
+                        && Double.isFinite(r.getRamHours())
+                        && r.getRamHours() > 0.0
+                        && Math.abs(r.getPeakMB() - 95.0 / 1024.0) < 1e-9);
+    }
+
+    private static void testRamHoursUnmeasurableModelYieldsNaN() {
+        RAMHours r = new RAMHours();
+        r.start();
+        r.sampleModelSize(90L * 1024);
+        r.sampleModelSize(-1L);                 // sizeof agent missing -> must NOT be clamped to 0
+        report("RAMHours: unmeasurable model size -> NaN, not a fabricated number",
+                r.isUnavailable()
+                        && Double.isNaN(r.getRamHours())
+                        && Double.isNaN(r.getPeakMB()));
+    }
+
+    private static void testCollectorUsesModelSizeSupplier() {
+        MetricsCollector mc = new MetricsCollector(2, 100, 0, 10);
+        final long modelBytes = 42L * 1024;
+        mc.setModelSizeSupplier(() -> modelBytes);
+        for (int i = 0; i < 50; i++) mc.update(0, 0, 1000);
+        double peak = mc.snapshot().peakMB;
+        report("MetricsCollector charges RAM-Hours to the model, not the JVM (peakMB=" + peak + ")",
+                Math.abs(peak - 42.0 / 1024.0) < 1e-9);
     }
 
     private static void testCollectorRunSurvivesNegativeRamSample() {

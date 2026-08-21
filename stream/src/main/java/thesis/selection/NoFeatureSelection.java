@@ -14,6 +14,11 @@ import java.util.Set;
  */
 public class NoFeatureSelection implements FeatureSelector {
 
+    /** All features are always used, so the selection never changes. */
+    @Override
+    public String lastSelectionTrigger() { return "none"; }
+
+
     @Getter private final int numFeatures;
     @Getter private final int k;
     private final int[] selection;

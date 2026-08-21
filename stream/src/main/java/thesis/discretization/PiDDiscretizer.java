@@ -12,21 +12,20 @@ public class PiDDiscretizer {
     private final int warmupN;
     private final int recomputeEvery;
     private final double expandThreshold;
-    private final double decayFactor;
     private final FeatureDiscretizer[] features;
 
     public PiDDiscretizer(int numFeatures, int numClasses) {
-        this(numFeatures, numClasses, 64, 8, 500, 1000, 0.20, 1.0);
+        this(numFeatures, numClasses, 64, 8, 500, 1000, 0.20);
     }
 
     public PiDDiscretizer(int numFeatures, int numClasses,
                           int b1, int b2, int warmupN, int recomputeEvery) {
-        this(numFeatures, numClasses, b1, b2, warmupN, recomputeEvery, 0.20, 1.0);
+        this(numFeatures, numClasses, b1, b2, warmupN, recomputeEvery, 0.20);
     }
 
     public PiDDiscretizer(int numFeatures, int numClasses,
                           int b1, int b2, int warmupN, int recomputeEvery,
-                          double expandThreshold, double decayFactor) {
+                          double expandThreshold) {
         if (numFeatures < 1) throw new IllegalArgumentException("numFeatures must be >= 1");
         if (numClasses < 2) throw new IllegalArgumentException("numClasses must be >= 2");
         if (recomputeEvery < 1) throw new IllegalArgumentException("recomputeEvery must be >= 1");
@@ -37,10 +36,9 @@ public class PiDDiscretizer {
         this.warmupN = warmupN;
         this.recomputeEvery = recomputeEvery;
         this.expandThreshold = expandThreshold;
-        this.decayFactor = decayFactor;
         this.features = new FeatureDiscretizer[numFeatures];
         for (int i = 0; i < numFeatures; i++) {
-            features[i] = new FeatureDiscretizer(b1, b2, numClasses, warmupN, expandThreshold, decayFactor);
+            features[i] = new FeatureDiscretizer(b1, b2, numClasses, warmupN, expandThreshold);
         }
     }
 

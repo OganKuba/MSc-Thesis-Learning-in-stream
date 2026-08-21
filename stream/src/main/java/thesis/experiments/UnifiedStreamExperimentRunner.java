@@ -13,10 +13,12 @@ import thesis.evaluation.MetricsCollector;
 import thesis.models.ARFWrapper;
 import thesis.models.DAARFWrapper;
 import thesis.models.DriftAwareSRP;
+import thesis.models.NativeDriftAwareSRP;
 import thesis.models.FeatureImportance;
 import thesis.models.FeatureSpace;
 import thesis.models.HoeffdingTreeWrapper;
 import thesis.models.MajorityClassWrapper;
+import thesis.models.ModelSize;
 import thesis.models.ModelWrapper;
 import thesis.models.NoChangeWrapper;
 import thesis.models.SRPWrapper;
@@ -132,6 +134,9 @@ public final class UnifiedStreamExperimentRunner {
         public double daArfSubspaceFraction = 0.5;    // A6b: subspace = ceil(frac*d); <=0 -> ceil(sqrt(d)).
                                                        // Default 0.5: tuned trees need a wider subspace than
                                                        // ceil(sqrt(d)) or they overfit under continuous drift.
+        public boolean daSrpNative = true;            // Option B: reflection-free native DA-SRP ensemble
+                                                       // is now the default; set false for the old MOA-reflection one.
+        public int pidB2 = 8;                         // PiD Layer-2 bins for IG (default 8); raise for multimodal features.
         public int daArfTreeGracePeriod = 50;         // A7: base-tree grace period (MOA ARF = 50)
         public double daArfTreeSplitConfidence = 0.01; // A7: base-tree split confidence (MOA ARF = 0.01)
     }
@@ -164,6 +169,8 @@ public final class UnifiedStreamExperimentRunner {
         public boolean writeRecoveryTime = true;
         public boolean writeAdaptationEvents = true;
         public boolean writeStatisticalTests = true;
+        /** Remove artefacts a previous run left behind; see purgeGeneratedOutputs(). */
+        public boolean cleanStaleOutputs = true;
 
         public double statisticalAlpha = 0.05;
 
@@ -186,6 +193,7 @@ public final class UnifiedStreamExperimentRunner {
             c.writeRecoveryTime       = r.path("write_recovery_time").asBoolean(c.writeRecoveryTime);
             c.writeAdaptationEvents   = r.path("write_adaptation_events").asBoolean(c.writeAdaptationEvents);
             c.writeStatisticalTests   = r.path("write_statistical_tests").asBoolean(c.writeStatisticalTests);
+            c.cleanStaleOutputs       = r.path("clean_stale_outputs").asBoolean(c.cleanStaleOutputs);
             c.statisticalAlpha        = r.path("statistical_alpha").asDouble(c.statisticalAlpha);
             r.path("seeds").forEach(n -> c.seeds.add(n.asInt()));
             if (c.seeds.isEmpty()) c.seeds.addAll(List.of(1, 2, 3, 4, 5));
@@ -268,6 +276,8 @@ public final class UnifiedStreamExperimentRunner {
             vs.daArfIntrinsicDrift  = v.path("daarf_intrinsic_drift").asBoolean(vs.daArfIntrinsicDrift);
             vs.daArfGateExternal    = v.path("daarf_gate_external").asBoolean(vs.daArfGateExternal);
             vs.daArfSubspaceFraction = v.path("daarf_subspace_fraction").asDouble(vs.daArfSubspaceFraction);
+            vs.daSrpNative          = v.path("da_srp_native").asBoolean(vs.daSrpNative);
+            vs.pidB2                = v.path("pid_b2").asInt(vs.pidB2);
             vs.daArfTreeGracePeriod = v.path("daarf_tree_grace_period").asInt(vs.daArfTreeGracePeriod);
             vs.daArfTreeSplitConfidence = v.path("daarf_tree_split_confidence").asDouble(vs.daArfTreeSplitConfidence);
             return vs;
@@ -283,9 +293,9 @@ public final class UnifiedStreamExperimentRunner {
         public final String blockId, dataset, variant, model, selector, detector;
         public final int seed;
         public final long instances;
-        public final double accuracy, kappa, kappaPer;
+        public final double accuracy, kappa, kappaTemporalFinal;
         public final long driftCount;
-        public final double ramHoursGB, peakMB, throughput;
+        public final double ramHoursGB, peakMB, throughput, stepThroughput;
         public final long wallMillis;
         public final long extKeepCount, extFullCount;
         public final long daSrpKept, daSrpSurgical, daSrpFull, daSrpNoReplacement;
@@ -294,17 +304,19 @@ public final class UnifiedStreamExperimentRunner {
 
         public RunResult(String blockId, String dataset, String variant, String model,
                          String selector, String detector, int seed, long instances,
-                         double accuracy, double kappa, double kappaPer, long driftCount,
-                         double ramHoursGB, double peakMB, double throughput, long wallMillis,
+                         double accuracy, double kappa, double kappaTemporalFinal, long driftCount,
+                         double ramHoursGB, double peakMB, double throughput, double stepThroughput,
+                         long wallMillis,
                          long extKeepCount, long extFullCount,
                          long daSrpKept, long daSrpSurgical, long daSrpFull, long daSrpNoReplacement,
                          String status, String error) {
             this.blockId = blockId; this.dataset = dataset; this.variant = variant;
             this.model = model; this.selector = selector; this.detector = detector;
             this.seed = seed; this.instances = instances;
-            this.accuracy = accuracy; this.kappa = kappa; this.kappaPer = kappaPer;
+            this.accuracy = accuracy; this.kappa = kappa; this.kappaTemporalFinal = kappaTemporalFinal;
             this.driftCount = driftCount;
             this.ramHoursGB = ramHoursGB; this.peakMB = peakMB; this.throughput = throughput;
+            this.stepThroughput = stepThroughput;
             this.wallMillis = wallMillis;
             this.extKeepCount = extKeepCount; this.extFullCount = extFullCount;
             this.daSrpKept = daSrpKept; this.daSrpSurgical = daSrpSurgical;
@@ -354,6 +366,7 @@ public final class UnifiedStreamExperimentRunner {
 
     public void run(Cfg cfg) throws Exception {
         Files.createDirectories(Paths.get(cfg.outputDir));
+        warnIfModelSizeUnavailable();
 
         List<WorkItem> work = expandWork(cfg);
         if (work.isEmpty()) {
@@ -364,6 +377,10 @@ public final class UnifiedStreamExperimentRunner {
         ConcurrentLinkedQueue<RunArtifacts> sink = executeAll(cfg, work);
         List<RunArtifacts> sorted = sortDeterministically(sink);
 
+        // Only now, with results in hand, drop what the previous run left behind — a failed run
+        // must never destroy the old results.
+        if (cfg.cleanStaleOutputs) purgeGeneratedOutputs(cfg);
+
         // Sequential writers. Order: runs_raw → summaries → detailed CSVs → stat tests.
         writeRunsRaw(cfg, sorted);
         writeMasterAndBlockSummaries(cfg, sorted);
@@ -371,6 +388,72 @@ public final class UnifiedStreamExperimentRunner {
         if (cfg.writeStatisticalTests) {
             writeStatisticalTests(cfg, sorted);
         }
+    }
+
+    /**
+     * Delete the CSV/stat-test artefacts a previous run left in the output tree.
+     *
+     * <p>Writers overwrite files by name but never remove ones that stopped being produced, so any
+     * rename of a metric or change to a block's dataset list silently leaves stale files sitting
+     * next to fresh ones under near-identical names — e.g. {@code avg_ranks_kappa_per.csv} beside
+     * {@code avg_ranks_kappa_temporal.csv}, or E4 figures for a stream no longer in E4. Those are
+     * indistinguishable from current output except by timestamp, and they are exactly what gets
+     * pasted into a thesis by mistake.
+     *
+     * <p>Scope is deliberately narrow: only {@code *.csv} directly inside each block folder and the
+     * whole {@code stat_tests/} subtree, both of which are 100 % generated here. {@code figures/}
+     * and {@code tables/} belong to the Python pipeline and are cleaned there.
+     */
+    private static void purgeGeneratedOutputs(Cfg cfg) {
+        int removed = 0;
+        try {
+            for (String name : new String[]{"master_summary.csv", "runs_raw.csv"}) {
+                if (Files.deleteIfExists(Paths.get(cfg.outputDir, name))) removed++;
+            }
+            Set<String> seen = new java.util.HashSet<>();
+            for (Block b : cfg.blocks) {
+                Path folder = blockFolder(cfg, b.id);
+                if (!seen.add(folder.toString()) || !Files.isDirectory(folder)) continue;
+                try (java.util.stream.Stream<Path> s = Files.list(folder)) {
+                    for (Path p : s.toList()) {
+                        if (Files.isRegularFile(p) && p.getFileName().toString().endsWith(".csv")) {
+                            Files.delete(p);
+                            removed++;
+                        }
+                    }
+                }
+                Path stats = folder.resolve("stat_tests");
+                if (Files.isDirectory(stats)) {
+                    try (java.util.stream.Stream<Path> s = Files.walk(stats)) {
+                        // Deepest-first so directories are empty by the time they are removed.
+                        for (Path p : s.sorted(Comparator.reverseOrder()).toList()) {
+                            boolean isFile = Files.isRegularFile(p);   // must be tested BEFORE delete
+                            Files.delete(p);
+                            if (isFile) removed++;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            System.err.println("[Unified][WARN] could not purge stale outputs: " + ex);
+            return;
+        }
+        System.out.printf(Locale.ROOT, "[Unified] purged %d stale artefact(s) from %s%n",
+                removed, cfg.outputDir);
+    }
+
+    /**
+     * RAM-Hours needs MOA's {@code sizeofag} java agent to measure model size. Without it every
+     * {@code measureByteSize()} returns -1 and the metric is recorded as NaN — say so up front
+     * rather than letting a long batch finish with an empty column.
+     */
+    private static void warnIfModelSizeUnavailable() {
+        if (ModelSize.agentAvailable()) return;
+        System.err.println("[Unified][WARN] sizeof agent not loaded — ram_hours_gb and peak_mb "
+                + "will be NaN for every run.");
+        System.err.println("[Unified][WARN] re-launch with: "
+                + "-javaagent:<m2>/com/github/fracpete/sizeofag/1.1.0/sizeofag-1.1.0.jar "
+                + "(run_experiments.sh does this for you).");
     }
 
     private static List<WorkItem> expandWork(Cfg cfg) {
@@ -545,10 +628,13 @@ public final class UnifiedStreamExperimentRunner {
             model = buildModel(wi.v, selector, header, numClasses, wi.seed, importance);
             detector = buildDetector(wi.v, numFeatures);
             metrics = new MetricsCollector(numClasses, cfg.windowSize, /*logEvery=*/0, cfg.ramSampleEvery);
+            // RAM-Hours must charge the MODEL's memory, not the JVM heap this worker shares with
+            // up to num_threads-1 concurrent runs.
+            metrics.setModelSizeSupplier(model::modelByteSize);
         }
 
         private void buildFullFeatureRankerFromWarmup() {
-            fullRankingPid = new PiDDiscretizer(numFeatures, numClasses);
+            fullRankingPid = newPid(numFeatures, numClasses, wi.v.pidB2);
             fullRanker = new InformationGainRanker(numFeatures, fullRankingPid.getB2(), numClasses);
             for (int i = 0; i < warmupWindow.length; i++) {
                 if (!rowAllFinite(warmupWindow[i])) continue;
@@ -576,6 +662,10 @@ public final class UnifiedStreamExperimentRunner {
                 ((DriftAwareSRP) model).setDriftListener(ev ->
                         recorder.onDASRPEvent(ev.instanceIdx, ev.summary));
             }
+            if (model instanceof NativeDriftAwareSRP) {
+                ((NativeDriftAwareSRP) model).setDriftListener(ev ->
+                        recorder.onDASRPEvent(ev.instanceIdx, ev.summary));
+            }
         }
 
         private long runPrequentialLoop() {
@@ -595,24 +685,33 @@ public final class UnifiedStreamExperimentRunner {
                 Instance x = stream.nextInstance().getData();
                 int yTrue = (int) x.classValue();
                 double[] feats = space.extractFeatures(x);
+                // Shared bookkeeping that feeds the importance CSV. Runs identically for every
+                // variant, so it is deliberately outside the timed region — charging it to the
+                // step would tax baselines for work only the DA models consume.
                 updateFullFeatureRanker(feats, yTrue);
-                long s0 = System.nanoTime();
+
+                // Timed region = the actual method: inference, drift detection, feature
+                // selection and training. Recording/CSV buffering stays outside.
+                long stepStart = System.nanoTime();
                 int yHat = model.predict(x);
-                long elapsed = System.nanoTime() - s0;
+                long predictNanos = System.nanoTime() - stepStart;
                 double err = (yHat == yTrue) ? 0.0 : 1.0;
 
                 detector.update(err, feats);
                 boolean alarm = detector.isGlobalDriftDetected();
                 Set<Integer> drifting = alarm ? detector.getDriftingFeatureIndices() : Set.of();
                 if (alarm) updateFeatureImportanceFromDetector();
-                metrics.update(yTrue, yHat, elapsed);
-                if (alarm) metrics.onDriftAlarm();
                 selector.update(feats, yTrue, alarm, drifting);
                 model.train(x, yTrue, alarm, drifting);
+                long stepNanos = System.nanoTime() - stepStart;
+
+                metrics.update(yTrue, yHat, predictNanos, stepNanos);
+                if (alarm) metrics.onDriftAlarm();
                 n++;
 
                 recorder.onInstance(n, yTrue, yHat,
-                        selector.getCurrentSelection(), alarm, drifting, metrics);
+                        selector.getCurrentSelection(), alarm, drifting, metrics,
+                        selector.lastSelectionTrigger());
                 if (alarm) {
                     recorder.onImportanceSnapshot(n, importance.getImportance(),
                             selector.getCurrentSelection(), drifting);
@@ -666,7 +765,18 @@ public final class UnifiedStreamExperimentRunner {
             MetricsCollector.Snapshot snap = metrics.snapshot();
             long wall = System.currentTimeMillis() - t0;
             double secs = wall / 1000.0;
+            // Two honest, differently-scoped speeds:
+            //  thr      — end-to-end wall clock: the method plus stream generation, warmup and
+            //             CSV buffering. Answers "how long did this run take".
+            //  stepThr  — from the summed per-instance step timings, so harness costs are
+            //             excluded and only the method (predict + detect + select + train) is
+            //             charged. Use this one to compare methods with each other.
+            // Neither is immune to CPU contention: measured 1 vs 6 worker threads, both drop by
+            // ~18 %. That factor applies uniformly across variants of a batch, so it cancels in
+            // relative comparisons, but absolute figures are only meaningful for a stated
+            // num_threads. Quote absolute throughput from a single-threaded run.
             double thr = secs > 0.0 ? (double) n / secs : 0.0;
+            double stepThr = snap.avgStepMicros > 0.0 ? 1_000_000.0 / snap.avgStepMicros : 0.0;
             long extKeep = 0, extFull = 0;
             long daKept = 0, daSurg = 0, daFull = 0, daNoRep = 0;
             if (model instanceof DAARFWrapper) {
@@ -679,11 +789,17 @@ public final class UnifiedStreamExperimentRunner {
                 daSurg = d.getTotalSurgical();
                 daFull = d.getTotalFull();
                 daNoRep = d.getTotalNoReplacement();
+            } else if (model instanceof NativeDriftAwareSRP) {
+                NativeDriftAwareSRP d = (NativeDriftAwareSRP) model;
+                daKept = d.getTotalKept();
+                daSurg = d.getTotalSurgical();
+                daFull = d.getTotalFull();
+                daNoRep = d.getTotalNoReplacement();
             }
             return new RunResult(wi.block.id, wi.ds.name, wi.v.name, wi.v.model,
                     wi.v.selector, wi.v.detector, wi.seed, n,
-                    snap.accuracyWindow, snap.kappa, snap.kappaPer, snap.driftCount,
-                    snap.ramHoursGB, snap.peakMB, thr, wall,
+                    snap.accuracyWindow, snap.kappa, snap.kappaTemporal, snap.driftCount,
+                    snap.ramHoursGB, snap.peakMB, thr, stepThr, wall,
                     extKeep, extFull, daKept, daSurg, daFull, daNoRep,
                     "OK", null);
         }
@@ -692,7 +808,7 @@ public final class UnifiedStreamExperimentRunner {
             return new RunResult(wi.block.id, wi.ds.name, wi.v.name, wi.v.model,
                     wi.v.selector, wi.v.detector, wi.seed, 0,
                     Double.NaN, Double.NaN, Double.NaN, 0,
-                    0.0, 0.0, 0.0, wall,
+                    0.0, 0.0, 0.0, 0.0, wall,
                     0, 0, 0, 0, 0, 0,
                     "FAIL", t.toString());
         }
@@ -756,25 +872,33 @@ public final class UnifiedStreamExperimentRunner {
             case "ALL":
                 return new NoFeatureSelection(d);
             case "S1":
-                return new StaticFeatureSelector(d, numClasses);
+                // Explicit PiD with configurable Layer-2 bins (default b2=8 == old 2-arg default).
+                return new StaticFeatureSelector(d, numClasses, K,
+                        newPid(d, numClasses, v.pidB2),
+                        (nf, nb, nc) -> new InformationGainRanker(nf, nb, nc));
             case "S2":
                 return new AlarmTriggeredSelector(
                         d, numClasses, K, Math.max(50, v.wPostDrift),
-                        new PiDDiscretizer(d, numClasses),
+                        newPid(d, numClasses, v.pidB2),
                         (nf, nb, nc) -> new InformationGainRanker(nf, nb, nc));
             case "S3":
                 return new PeriodicSelector(
                         d, numClasses, K, Math.max(100, v.periodicInterval), 100,
-                        new PiDDiscretizer(d, numClasses),
+                        newPid(d, numClasses, v.pidB2),
                         (nf, nb, nc) -> new InformationGainRanker(nf, nb, nc));
             case "S4":
                 return new DriftAwareSelector(
                         d, numClasses, K, Math.max(100, v.periodicInterval), 100,
                         Math.max(50, v.wPostDrift),
-                        new PiDDiscretizer(d, numClasses),
+                        newPid(d, numClasses, v.pidB2),
                         (nf, nb, nc) -> new InformationGainRanker(nf, nb, nc));
             default: throw new IllegalArgumentException("Unknown selector: " + v.selector);
         }
+    }
+
+    /** PiD with b1=64 Layer-1 bins and configurable b2 Layer-2 bins (defaults match 2-arg ctor). */
+    private static PiDDiscretizer newPid(int d, int numClasses, int b2) {
+        return new PiDDiscretizer(d, numClasses, 64, b2, 500, 1000);
     }
 
     static TwoLevelDriftDetector buildDetector(VariantSpec v, int numFeatures) {
@@ -802,11 +926,14 @@ public final class UnifiedStreamExperimentRunner {
         String key = v.model.toUpperCase(Locale.ROOT).replace('_', '-');
         boolean noExternalFeatureSelection = isNoFeatureSelection(v.selector);
         switch (key) {
-            case "HT":            return new HoeffdingTreeWrapper(selector, header);
+            case "HT":            return new HoeffdingTreeWrapper(selector, header,
+                                          200, 0.01, false, seed);
             case "ARF":           return new ARFWrapper(selector, header,
-                                          v.ensembleSize, v.lambda, false, !noExternalFeatureSelection);
+                                          v.ensembleSize, v.lambda, false, !noExternalFeatureSelection,
+                                          seed);
             case "SRP":           return new SRPWrapper(selector, header,
-                                          v.ensembleSize, v.lambda, false, !noExternalFeatureSelection);
+                                          v.ensembleSize, v.lambda, false, !noExternalFeatureSelection,
+                                          seed);
             case "MAJORITY":
             case "MAJORITYCLASS": return new MajorityClassWrapper(selector, numClasses);
             case "NOCHANGE":      return new NoChangeWrapper(selector, numClasses);
@@ -823,12 +950,38 @@ public final class UnifiedStreamExperimentRunner {
         return "NONE".equals(key) || "NO_FS".equals(key) || "ALL".equals(key);
     }
 
-    private static DriftAwareSRP newDASRP(VariantSpec v, FeatureSelector selector,
-                                          InstancesHeader header, int seed,
-                                          FeatureImportance importance, boolean useTopK) {
+    private static ModelWrapper newDASRP(VariantSpec v, FeatureSelector selector,
+                                         InstancesHeader header, int seed,
+                                         FeatureImportance importance, boolean useTopK) {
+        if (v.daSrpNative) return newNativeDASRP(v, selector, header, seed, importance, useTopK);
         SRPWrapper srp = new SRPWrapper(selector, header,
-                v.ensembleSize, v.lambda, /*resetOnSelectionChange=*/false, /*useHardFilter=*/false);
+                v.ensembleSize, v.lambda, /*resetOnSelectionChange=*/false, /*useHardFilter=*/false,
+                seed);
         DriftAwareSRP da = new DriftAwareSRP(srp, v.tau, seed, importance);
+        da.setImportancePower(v.importancePower);
+        da.setSamplingBeta(v.samplingBeta);
+        da.setUnlocalizedFallbackFraction(v.unlocalizedFallbackFraction);
+        da.setUnstableImportanceQuantile(v.unstableImportanceQuantile);
+        da.setSurgicalReplacementTolerance(v.surgicalReplacementTolerance);
+        if (useTopK) {
+            da.setTopKFraction(v.topKFraction);
+            da.setCorrectionAlpha(v.correctionAlpha);
+            da.setMaxBlendAlpha(v.maxBlendAlpha);
+        } else {
+            da.setCorrectionAlpha(0.0);
+        }
+        return da;
+    }
+
+    private static ModelWrapper newNativeDASRP(VariantSpec v, FeatureSelector selector,
+                                               InstancesHeader header, int seed,
+                                               FeatureImportance importance, boolean useTopK) {
+        int origDim = header.numAttributes() - 1;
+        int numClasses = header.numClasses();
+        int sub = NativeDriftAwareSRP.defaultSubspaceSize(origDim);
+        NativeDriftAwareSRP da = new NativeDriftAwareSRP(selector, header, numClasses,
+                v.ensembleSize, sub, v.lambda, /*accWindow=*/1000, v.tau,
+                /*useBkg=*/true, /*warnDelta=*/1e-4, /*driftDelta=*/1e-5, seed, importance);
         da.setImportancePower(v.importancePower);
         da.setSamplingBeta(v.samplingBeta);
         da.setUnlocalizedFallbackFraction(v.unlocalizedFallbackFraction);
@@ -882,18 +1035,23 @@ public final class UnifiedStreamExperimentRunner {
     private static void writeRunsRaw(Cfg cfg, List<RunArtifacts> sorted) throws Exception {
         Path out = Paths.get(cfg.outputDir, "runs_raw.csv");
         try (PrintWriter w = new PrintWriter(new FileWriter(out.toFile()))) {
+            // kappa_temporal_final replaces the old "kappa_per": both were TemporalKappa, this one
+            // is simply its value in the last window of the run.
             w.println("block,dataset,variant,model,selector,detector,seed,instances,"
-                    + "accuracy,kappa,kappa_per,drift_count,ram_hours_gb,peak_mb,throughput,wall_ms,"
+                    + "accuracy,kappa,kappa_temporal_final,drift_count,ram_hours_gb,peak_mb,throughput,step_throughput,wall_ms,"
                     + "ext_keep_count,ext_full_count,da_kept,da_surgical,da_full,da_no_replacement,"
                     + "status,error");
             for (RunArtifacts ra : sorted) {
                 RunResult r = ra.result;
                 w.printf(Locale.ROOT,
-                        "%s,%s,%s,%s,%s,%s,%d,%d,%.6f,%.6f,%.6f,%d,%.6f,%.1f,%.2f,%d,%d,%d,%d,%d,%d,%d,%s,%s%n",
+                        // ram_hours_gb in scientific notation and peak_mb to 6 dp: a model is
+                        // ~1e2 KB, so the old %.6f/%.1f pair rounded both columns to zero once
+                        // they started measuring the model instead of the whole JVM heap.
+                        "%s,%s,%s,%s,%s,%s,%d,%d,%.6f,%.6f,%.6f,%d,%.9e,%.6f,%.2f,%.2f,%d,%d,%d,%d,%d,%d,%d,%s,%s%n",
                         r.blockId, r.dataset, r.variant, r.model, r.selector, r.detector,
                         r.seed, r.instances,
-                        r.accuracy, r.kappa, r.kappaPer, r.driftCount,
-                        r.ramHoursGB, r.peakMB, r.throughput, r.wallMillis,
+                        r.accuracy, r.kappa, r.kappaTemporalFinal, r.driftCount,
+                        r.ramHoursGB, r.peakMB, r.throughput, r.stepThroughput, r.wallMillis,
                         r.extKeepCount, r.extFullCount,
                         r.daSrpKept, r.daSrpSurgical, r.daSrpFull, r.daSrpNoReplacement,
                         r.status, r.error == null ? "" : r.error.replace(',', ';').replace('\n', ' '));
@@ -947,17 +1105,35 @@ public final class UnifiedStreamExperimentRunner {
 
     private static String summaryHeader() {
         return "block,dataset,variant,model,selector,detector,num_seeds,instances_mean,"
-                + "accuracy_mean,accuracy_std,kappa_mean,kappa_std,kappa_per_mean,kappa_per_std,"
+                // The two temporal-kappa columns are the SAME metric under two aggregations:
+                // *_final is the last window of the run, *_windowed is the mean over all windows.
+                // They used to be published as "kappa_per" and "temporal_kappa", which read as two
+                // unrelated metrics and got two independent sets of tables and CD diagrams.
+                + "accuracy_mean,accuracy_std,kappa_mean,kappa_std,"
+                + "kappa_temporal_final_mean,kappa_temporal_final_std,"
                 + "drift_count_mean,drift_count_std,ram_hours_gb_mean,ram_hours_gb_std,"
-                + "peak_mb_mean,throughput_mean,wall_ms_mean,"
+                + "peak_mb_mean,throughput_mean,step_throughput_mean,wall_ms_mean,"
                 + "ext_keep_count_mean,ext_full_count_mean,"
                 + "da_kept_mean,da_surgical_mean,da_full_mean,da_no_replacement_mean,"
-                + "temporal_kappa_mean,temporal_kappa_std,"
+                + "kappa_temporal_windowed_mean,kappa_temporal_windowed_std,"
                 + "recovery_time_mean,recovery_time_std,"
+                + "recovery_max_drop_mean,recovery_max_drop_std,"
+                + "recovery_recovered_mean,recovery_unrecovered_mean,"
+                + "recovery_nodrop_mean,recovery_cancelled_mean,"
                 + "feature_stability_mean,feature_stability_std,"
                 + "selection_changes_mean,selection_changes_std,"
                 + "drift_alarms_mean,drift_alarms_std,"
-                + "mean_selected_feature_count,mean_selected_feature_count_std";
+                // No _std twin: K is fixed by construction (selectTopK always returns exactly k), so the
+                // across-seed std was 0.000 in 250 of 250 rows. Reinstate it if a variable-K
+                // selector is ever added.
+                + "mean_selected_feature_count";
+    }
+
+    private static double[] outcomeCounts(List<RunArtifacts> rs,
+                                          RunDetailedRecorder.RecoveryOutcome outcome) {
+        return doubles(rs, r -> r.recorder == null
+                ? Double.NaN
+                : (double) r.recorder.recoveryOutcomeCount(outcome));
     }
 
     private static String summaryRow(List<RunArtifacts> rs) {
@@ -965,11 +1141,12 @@ public final class UnifiedStreamExperimentRunner {
         double[] inst = doubles(rs, r -> (double) r.result.instances);
         double[] acc  = doubles(rs, r -> r.result.accuracy);
         double[] kap  = doubles(rs, r -> r.result.kappa);
-        double[] kper = doubles(rs, r -> r.result.kappaPer);
+        double[] kper = doubles(rs, r -> r.result.kappaTemporalFinal);
         double[] dc   = doubles(rs, r -> (double) r.result.driftCount);
         double[] rh   = doubles(rs, r -> r.result.ramHoursGB);
         double[] peak = doubles(rs, r -> r.result.peakMB);
         double[] thr  = doubles(rs, r -> r.result.throughput);
+        double[] sthr = doubles(rs, r -> r.result.stepThroughput);
         double[] wall = doubles(rs, r -> (double) r.result.wallMillis);
         double[] xk   = doubles(rs, r -> (double) r.result.extKeepCount);
         double[] xf   = doubles(rs, r -> (double) r.result.extFullCount);
@@ -978,34 +1155,45 @@ public final class UnifiedStreamExperimentRunner {
         double[] daf  = doubles(rs, r -> (double) r.result.daSrpFull);
         double[] dan  = doubles(rs, r -> (double) r.result.daSrpNoReplacement);
 
-        double[] tkap = doubles(rs, r -> r.recorder == null ? Double.NaN : r.recorder.meanTemporalKappa());
+        double[] tkap = doubles(rs, r -> r.recorder == null ? Double.NaN : r.recorder.meanWindowedTemporalKappa());
         double[] recT = doubles(rs, r -> r.recorder == null ? Double.NaN : r.recorder.meanRecoveryLength());
         double[] stab = doubles(rs, r -> r.recorder == null ? Double.NaN : r.recorder.averageStabilityRatio());
         double[] sch  = doubles(rs, r -> r.recorder == null ? Double.NaN : (double) r.recorder.selectionChangeCount());
         double[] dal  = doubles(rs, r -> r.recorder == null ? Double.NaN : (double) r.recorder.driftAlarms.size());
         double[] msel = doubles(rs, r -> r.recorder == null ? Double.NaN : r.recorder.meanSelectedFeatureCount());
 
+        double[] drop = doubles(rs, r -> r.recorder == null ? Double.NaN : r.recorder.meanMaxDrop());
+        double[] nRec = outcomeCounts(rs, RunDetailedRecorder.RecoveryOutcome.RECOVERED);
+        double[] nUnr = outcomeCounts(rs, RunDetailedRecorder.RecoveryOutcome.UNRECOVERED);
+        double[] nNod = outcomeCounts(rs, RunDetailedRecorder.RecoveryOutcome.NO_DROP);
+        double[] nCan = outcomeCounts(rs, RunDetailedRecorder.RecoveryOutcome.CANCELLED);
+
         return String.format(Locale.ROOT,
                 "%s,%s,%s,%s,%s,%s,%d,%.0f,"
                         + "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
-                        + "%.2f,%.2f,%.6f,%.6f,"
-                        + "%.1f,%.2f,%.0f,"
+                        // ram_hours_gb mean/std scientific, peak_mb to 6 dp — see writeRunsRaw().
+                        + "%.2f,%.2f,%.9e,%.9e,"
+                        + "%.6f,%.2f,%.2f,%.0f,"
                         + "%.2f,%.2f,"
                         + "%.2f,%.2f,%.2f,%.2f,"
-                        + "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s",
+                        + "%s,%s,%s,%s,"
+                        + "%s,%s,%.2f,%.2f,%.2f,%.2f,"
+                        + "%s,%s,%s,%s,%s,%s,%s",
                 any.blockId, any.dataset, any.variant, any.model, any.selector, any.detector,
                 rs.size(), mean(inst),
                 mean(acc), std(acc), mean(kap), std(kap), mean(kper), std(kper),
                 mean(dc), std(dc), mean(rh), std(rh),
-                mean(peak), mean(thr), mean(wall),
+                mean(peak), mean(thr), mean(sthr), mean(wall),
                 mean(xk), mean(xf),
                 mean(dak), mean(das), mean(daf), mean(dan),
                 fmt(meanNan(tkap)), fmt(stdNan(tkap)),
                 fmt(meanNan(recT)), fmt(stdNan(recT)),
+                fmt(meanNan(drop)), fmt(stdNan(drop)),
+                mean(nRec), mean(nUnr), mean(nNod), mean(nCan),
                 fmt(meanNan(stab)), fmt(stdNan(stab)),
                 fmt(meanNan(sch)),  fmt(stdNan(sch)),
                 fmt(meanNan(dal)),  fmt(stdNan(dal)),
-                fmt(meanNan(msel)), fmt(stdNan(msel)));
+                fmt(meanNan(msel)));
     }
 
     // ========================================================================
@@ -1036,19 +1224,24 @@ public final class UnifiedStreamExperimentRunner {
         try (PrintWriter w = new PrintWriter(new FileWriter(out.toFile()))) {
             w.println("block,dataset,variant,model,selector,detector,seed,"
                     + "window_id,start_instance,end_instance,"
-                    + "accuracy,kappa,kappa_per,temporal_kappa,"
-                    + "ram_hours_gb,peak_mb,throughput,"
+                    // Was "kappa_per,temporal_kappa": the same quantity twice, the second of which
+                    // was a hard-coded NaN placeholder in every row ever written.
+                    + "accuracy,kappa,kappa_temporal,"
+                    // throughput now covers the whole prequential step, so it is comparable with
+                    // throughput_mean in master_summary.csv; predict_latency_us keeps the
+                    // inference-only cost that "throughput" used to report by mistake.
+                    + "ram_hours_gb,peak_mb,throughput,predict_latency_us,"
                     + "drift_count_in_window,total_drift_count");
             for (RunArtifacts ra : runs) {
                 RunResult r = ra.result;
                 for (RunDetailedRecorder.WindowRow row : ra.recorder.windows) {
                     w.printf(Locale.ROOT,
-                            "%s,%s,%s,%s,%s,%s,%d,%d,%d,%d,%.6f,%.6f,%.6f,%s,%.6f,%.2f,%.2f,%d,%d%n",
+                            // ram_hours_gb scientific, peak_mb to 6 dp — see writeRunsRaw().
+                            "%s,%s,%s,%s,%s,%s,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.9e,%.6f,%.2f,%.3f,%d,%d%n",
                             r.blockId, r.dataset, r.variant, r.model, r.selector, r.detector,
                             r.seed, row.windowId, row.startInstance, row.endInstance,
-                            row.accuracy, row.kappa, row.kappaPer,
-                            fmt(row.temporalKappa),
-                            row.ramHoursGB, row.peakMB, row.throughput,
+                            row.accuracy, row.kappa, row.kappaTemporal,
+                            row.ramHoursGB, row.peakMB, row.throughput, row.predictLatencyMicros,
                             row.driftCountInWindow, row.totalDriftCount);
                 }
             }
@@ -1127,8 +1320,11 @@ public final class UnifiedStreamExperimentRunner {
 
     private static void writeRecoveryTime(Path out, List<RunArtifacts> runs) throws Exception {
         try (PrintWriter w = new PrintWriter(new FileWriter(out.toFile()))) {
+            // outcome / drop_instance / instances_to_drop are new: recovery_length alone cannot
+            // distinguish "never recovered" from "cancelled by the next alarm" from "no drop".
             w.println("block,dataset,variant,model,selector,detector,seed,"
-                    + "drift_id,drift_instance,recovered_instance,recovery_length,"
+                    + "drift_id,drift_instance,outcome,drop_instance,instances_to_drop,"
+                    + "recovered_instance,recovery_length,"
                     + "baseline_accuracy_before_drift,threshold_accuracy,"
                     + "max_drop,area_under_recovery_curve");
             for (RunArtifacts ra : runs) {
@@ -1137,9 +1333,10 @@ public final class UnifiedStreamExperimentRunner {
                 rows.sort(Comparator.comparingLong(a -> a.driftInstance));
                 for (RunDetailedRecorder.RecoveryRow row : rows) {
                     w.printf(Locale.ROOT,
-                            "%s,%s,%s,%s,%s,%s,%d,%d,%d,%d,%d,%s,%s,%s,%s%n",
+                            "%s,%s,%s,%s,%s,%s,%d,%d,%d,%s,%d,%d,%d,%d,%s,%s,%s,%s%n",
                             r.blockId, r.dataset, r.variant, r.model, r.selector, r.detector,
                             r.seed, row.driftId, row.driftInstance,
+                            row.outcome, row.dropInstance, row.instancesToDrop,
                             row.recoveredInstance, row.recoveryLength,
                             fmt(row.baselineAccuracyBeforeDrift),
                             fmt(row.thresholdAccuracy),
@@ -1155,19 +1352,25 @@ public final class UnifiedStreamExperimentRunner {
             w.println("block,dataset,variant,model,selector,detector,seed,"
                     + "instance_index,event_type,"
                     + "kept_count,surgical_count,full_replacement_count,no_replacement_count,"
-                    + "ext_keep_count,ext_full_count");
+                    + "ext_keep_count,ext_full_count,"
+                    // Per-learner detail for DA-SRP (pipe-encoded, one entry per ensemble
+                    // member, ensemble order). Empty on DA-ARF rows, which only expose deltas.
+                    + "per_learner_action,per_learner_overlap,per_learner_subspace");
             for (RunArtifacts ra : runs) {
                 RunResult r = ra.result;
                 List<RunDetailedRecorder.AdaptationRow> rows = new ArrayList<>(ra.recorder.adaptations);
                 rows.sort(Comparator.comparingLong(a -> a.instanceIndex));
                 for (RunDetailedRecorder.AdaptationRow row : rows) {
                     w.printf(Locale.ROOT,
-                            "%s,%s,%s,%s,%s,%s,%d,%d,%s,%d,%d,%d,%d,%d,%d%n",
+                            "%s,%s,%s,%s,%s,%s,%d,%d,%s,%d,%d,%d,%d,%d,%d,%s,%s,%s%n",
                             r.blockId, r.dataset, r.variant, r.model, r.selector, r.detector,
                             r.seed, row.instanceIndex, row.eventType,
                             row.keptCount, row.surgicalCount,
                             row.fullReplacementCount, row.noReplacementCount,
-                            row.extKeepCount, row.extFullCount);
+                            row.extKeepCount, row.extFullCount,
+                            row.perLearnerAction == null ? "" : row.perLearnerAction,
+                            row.perLearnerOverlap == null ? "" : row.perLearnerOverlap,
+                            row.perLearnerSubspace == null ? "" : row.perLearnerSubspace);
                 }
             }
         }

@@ -66,10 +66,10 @@
       "description": "Ablation & comparative — DA-SRP (A / AB / ABC) vs DA-ARF (A / AB / ABC) on identical streams.",
       "output_file": "E3_ablation.csv",
       "variants": [
-        { "name": "SRP_baseline",     "model": "SRP",      "selector": "NONE", "detector": "ADWIN" },
-        { "name": "SRP+S1_baseline",  "model": "SRP",      "selector": "S1", "detector": "ADWIN" },
-        { "name": "ARF_baseline",     "model": "ARF",      "selector": "NONE", "detector": "ADWIN" },
-        { "name": "ARF+S2_baseline",  "model": "ARF",      "selector": "S2", "detector": "ADWIN", "w_post_drift": 1000 },
+        { "name": "SRP",     "model": "SRP",      "selector": "NONE", "detector": "ADWIN" },
+        { "name": "SRP+S1",  "model": "SRP",      "selector": "S1", "detector": "ADWIN" },
+        { "name": "ARF",     "model": "ARF",      "selector": "NONE", "detector": "ADWIN" },
+        { "name": "ARF+S2",  "model": "ARF",      "selector": "S2", "detector": "ADWIN", "w_post_drift": 1000 },
 
         { "name": "DA-SRP-A",         "model": "DA-SRP-A",   "selector": "S1", "detector": "ADWIN", "tau": 0.5 },
         { "name": "DA-SRP-AB",        "model": "DA-SRP-AB",  "selector": "S1", "detector": "ADWIN", "tau": 0.5, "w1": 0.7, "importance_power": 2.0, "sampling_beta": 0.7 },
@@ -77,10 +77,7 @@
 
         { "name": "DA-ARF-A",         "model": "DA-ARF",   "selector": "S1", "detector": "ADWIN", "sampling_beta": 1.0, "topk_fraction": 1.0, "daarf_use_background": false },
         { "name": "DA-ARF-AB",        "model": "DA-ARF",   "selector": "S1", "detector": "ADWIN", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 1.0, "daarf_use_background": true },
-        { "name": "DA-ARF-ABC",       "model": "DA-ARF",   "selector": "S1", "detector": "ADWIN", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5, "daarf_use_background": true },
-
-        { "name": "DA-ARF-ABC-untuned", "model": "DA-ARF", "selector": "S1", "detector": "ADWIN", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5, "daarf_use_background": true, "daarf_tree_grace_period": 200, "daarf_tree_split_confidence": 0.0000001, "daarf_subspace_fraction": -1 },
-        { "name": "DA-ARF-ABC-narrow",  "model": "DA-ARF", "selector": "S1", "detector": "ADWIN", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5, "daarf_use_background": true, "daarf_subspace_fraction": -1 }
+        { "name": "DA-ARF-ABC",       "model": "DA-ARF",   "selector": "S1", "detector": "ADWIN", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5, "daarf_use_background": true }
       ],
       "datasets": [
         { "name": "SEA",          "type": "synthetic", "generator": "SEA",                "n": 100000, "noise_features": 5 },
@@ -96,21 +93,21 @@
 
     {
       "id": "E4",
-      "description": "Drift magnitude & high dynamics — 10 drifts / 100k on SEA & STAGGER, ARF vs SRP vs DA-SRP-ABC vs DA-ARF.",
+      "description": "Drift intensity — Low vs HiDyn on 3 stream families: SEA (abrupt-drift count 3/10), FeatureDrift (2/10 drifting attributes), RandomRBF (centroid speed 0.001/0.010). 4 methods x 6 datasets gives Nemenyi CD = 1.91 instead of 3.77, and the feature space is identical inside each Low/HiDyn pair. Hyperplane was rejected as a dynamics axis: a magnitude sweep 0.001..0.3 moved mean kappa non-monotonically and in the wrong direction. STAGGER was dropped because both its variants are saturated once the +S1 methods (whose collapse at K=ceil(sqrt(3))=2 was all that separated them) move out of this block.",
       "output_file": "E4_high_dynamics.csv",
       "variants": [
         { "name": "ARF",          "model": "ARF",        "selector": "NONE", "detector": "ADWIN" },
-        { "name": "ARF+S1",       "model": "ARF",        "selector": "S1", "detector": "ADWIN" },
         { "name": "SRP",          "model": "SRP",        "selector": "NONE", "detector": "ADWIN" },
-        { "name": "SRP+S1",       "model": "SRP",        "selector": "S1", "detector": "ADWIN" },
         { "name": "DA-SRP-ABC",   "model": "DA-SRP-ABC", "selector": "S1", "detector": "ADWIN", "tau": 0.5, "w1": 0.7, "topk_fraction": 0.3, "correction_alpha": 0.15 },
         { "name": "DA-ARF-ABC",   "model": "DA-ARF",     "selector": "S1", "detector": "ADWIN", "importance_power": 2.0, "sampling_beta": 0.7, "topk_fraction": 0.5, "daarf_use_background": true }
       ],
       "datasets": [
-        { "name": "SEA-HiDyn",     "type": "synthetic", "generator": "SEA",     "n": 100000, "num_drifts": 10, "noise_features": 5 },
-        { "name": "STAGGER-HiDyn", "type": "synthetic", "generator": "STAGGER", "n": 100000, "num_drifts": 10 },
-        { "name": "SEA-Low",       "type": "synthetic", "generator": "SEA",     "n": 100000, "num_drifts": 3 },
-        { "name": "STAGGER-Low",   "type": "synthetic", "generator": "STAGGER", "n": 100000, "num_drifts": 3 }
+        { "name": "SEA-Low",             "type": "synthetic", "generator": "SEA",                "n": 100000, "num_drifts": 3,  "noise_features": 5 },
+        { "name": "SEA-HiDyn",           "type": "synthetic", "generator": "SEA",                "n": 100000, "num_drifts": 10, "noise_features": 5 },
+        { "name": "FeatureDrift-Low",    "type": "synthetic", "generator": "CustomFeatureDrift", "n": 100000, "drift_features": 2,  "sigma": 0.01, "noise_features": 5 },
+        { "name": "FeatureDrift-HiDyn",  "type": "synthetic", "generator": "CustomFeatureDrift", "n": 100000, "drift_features": 10, "sigma": 0.01, "noise_features": 5 },
+        { "name": "RandomRBF-Low",       "type": "synthetic", "generator": "RandomRBF",          "n": 100000, "speed": 0.001, "noise_features": 5 },
+        { "name": "RandomRBF-HiDyn",     "type": "synthetic", "generator": "RandomRBF",          "n": 100000, "speed": 0.010, "noise_features": 5 }
       ]
     },
 

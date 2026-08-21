@@ -66,6 +66,10 @@ public class MajorityClassWrapper implements ModelWrapper {
         total = 0;
     }
 
+    /** The whole model is the class-count vector; report it honestly instead of the JVM heap. */
+    @Override
+    public long modelByteSize() { return 16L + 8L * numClasses + 8L; }
+
     @Override
     public String name() { return "MajorityClass"; }
 }

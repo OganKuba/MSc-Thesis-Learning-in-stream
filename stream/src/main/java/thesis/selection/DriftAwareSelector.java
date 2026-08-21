@@ -65,6 +65,11 @@ public class DriftAwareSelector implements FeatureSelector {
     @Getter private long updatesBeforeInit;
 
     private EventListener listener;
+    /** Which path last changed the selection: "drift_alarm" or "periodic". */
+    private String lastSelectionTrigger = "initial";
+
+    @Override
+    public String lastSelectionTrigger() { return lastSelectionTrigger; }
 
     public DriftAwareSelector(int numFeatures, int numClasses) {
         this(numFeatures, numClasses,
@@ -317,7 +322,7 @@ public class DriftAwareSelector implements FeatureSelector {
 
         int[] oldSel = selection;
         if (swaps > 0) {
-            commitSelection(newSet);
+            commitSelection(newSet, "drift_alarm");
             alarmSwapEvents++;
             swappedByAlarm += swaps;
         }
@@ -398,7 +403,7 @@ public class DriftAwareSelector implements FeatureSelector {
 
         int[] oldSel = selection;
         if (swaps > 0) {
-            commitSelection(newSet);
+            commitSelection(newSet, "periodic");
             periodicSwapEvents++;
             swappedByPeriodic += swaps;
         }
@@ -436,7 +441,7 @@ public class DriftAwareSelector implements FeatureSelector {
         for (int i = 0; i < arr.length; i++) arr[i] = boxed[i];
     }
 
-    private void commitSelection(Set<Integer> newSet) {
+    private void commitSelection(Set<Integer> newSet, String trigger) {
         if (newSet.size() != k) {
             throw new IllegalStateException("commitSelection: expected " + k +
                     " features, got " + newSet.size());
@@ -446,6 +451,7 @@ public class DriftAwareSelector implements FeatureSelector {
         for (int f : newSet) arr[idx++] = f;
         Arrays.sort(arr);
         this.selection = arr;
+        this.lastSelectionTrigger = trigger;
     }
 
     private void pushRing(int[] bins, int label) {

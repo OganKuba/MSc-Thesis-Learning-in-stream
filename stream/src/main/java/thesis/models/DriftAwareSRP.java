@@ -926,6 +926,8 @@ public class DriftAwareSRP implements ModelWrapper {
 
     @Override public FeatureSelector getSelector() { return srpWrapper.getSelector(); }
     @Override public int[] getCurrentSelection()   { return srpWrapper.getCurrentSelection(); }
+    /** The model is the wrapped MOA SRP ensemble; this class only re-points its subspaces. */
+    @Override public long modelByteSize()          { return srpWrapper.modelByteSize(); }
 
     @Override
     public void reset() {

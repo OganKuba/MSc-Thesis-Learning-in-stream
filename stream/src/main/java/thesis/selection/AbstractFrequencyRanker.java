@@ -5,7 +5,7 @@ import lombok.Getter;
 import java.util.Arrays;
 
 @Getter
-public abstract class AbstractFrequencyRanker implements FilterRanker {
+public abstract class  AbstractFrequencyRanker implements FilterRanker {
 
     public static final int UNKNOWN_BIN = -1;
 

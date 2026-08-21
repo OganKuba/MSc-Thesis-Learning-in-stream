@@ -47,16 +47,49 @@ public final class RunDetailedRecorder {
     private long lastSelectionChangeInstance = -1;
     private final List<long[]> pendingDriftAfter = new ArrayList<>();
 
+    /**
+     * How a recovery episode ended. The previous implementation collapsed all of these into a
+     * single {@code recovery_length} of {@code -1}, which made "never recovered" indistinguishable
+     * from "superseded by the next alarm" and from "the alarm was never followed by any measurable
+     * degradation at all".
+     */
+    public enum RecoveryOutcome {
+        /** Accuracy dropped below the pre-drift threshold and climbed back. */
+        RECOVERED,
+        /** Accuracy dropped and had still not returned when the budget ran out. */
+        UNRECOVERED,
+        /** No measurable degradation followed the alarm within the grace period. */
+        NO_DROP,
+        /** A new alarm arrived while this episode was still open. */
+        CANCELLED
+    }
+
     private final double recoveryTolerance = 0.05;
-    private final int recoveryWindow = 10_000;
+    /** Instances allowed for the accuracy to climb back before the episode is written off. */
+    private final int recoveryBudgetInstances = 10_000;
+    /** Instances allowed for degradation to appear at all before the episode is NO_DROP. */
+    private final int dropGraceInstances;
+
+    /**
+     * Per-instance ring of the sliding-window accuracy, one full window long. The baseline for an
+     * episode is read from the far end of this ring — i.e. the accuracy as it stood one whole
+     * window <i>before</i> the alarm. Taking the baseline at alarm time instead (the old
+     * behaviour) sampled an already-degraded value, because a detector only fires once the error
+     * has risen and the trailing accuracy window has therefore already absorbed the drift.
+     */
+    private final double[] accHistory;
+    private int accHistoryIdx;
+    private int accHistoryCount;
+
     private boolean recoveryTracking;
+    private boolean dropObserved;
     private long currentDriftId;
     private long currentDriftInstance;
+    private long currentDropInstance;
     private double currentBaselineAcc;
     private double currentThresholdAcc;
     private double currentMaxDrop;
     private double currentRecoveryArea;
-    private long currentRecoveryTicks;
     private long driftCounter;
 
     public RunDetailedRecorder(String blockId, String dataset, String variant,
@@ -71,6 +104,10 @@ public final class RunDetailedRecorder {
         this.seed = seed;
         this.numFeatures = numFeatures;
         this.windowSize = Math.max(1, windowSize);
+        this.accHistory = new double[this.windowSize];
+        // Degradation shows up in a trailing window only after that window has refilled with
+        // post-drift instances, so allow two windows before calling an episode NO_DROP.
+        this.dropGraceInstances = 2 * this.windowSize;
     }
 
     public void onInitialSelection(long instanceIndex, int[] selection) {
@@ -86,14 +123,35 @@ public final class RunDetailedRecorder {
                            int[] currentSelection, boolean driftAlarm,
                            Set<Integer> driftingFeatures,
                            MetricsCollector metrics) {
+        onInstance(instanceIndex, yTrue, yPred, currentSelection, driftAlarm,
+                driftingFeatures, metrics, null);
+    }
+
+    /**
+     * @param selectionTrigger what the selector says caused its latest change
+     *                         ({@link thesis.selection.FeatureSelector#lastSelectionTrigger()}).
+     *                         Passing {@code null} falls back to the old, uninformative
+     *                         "selection_change" label.
+     */
+    public void onInstance(long instanceIndex, int yTrue, int yPred,
+                           int[] currentSelection, boolean driftAlarm,
+                           Set<Integer> driftingFeatures,
+                           MetricsCollector metrics,
+                           String selectionTrigger) {
         double windowAcc = metrics.getAccuracy().getAccuracy();
 
         if (driftAlarm) {
             windowDriftCount++;
             totalDriftCount++;
             recordDriftAlarm(instanceIndex, driftingFeatures, yTrue != yPred ? 1.0 : 0.0, windowAcc);
-            startRecoveryTracking(instanceIndex, windowAcc);
+            startRecoveryTracking(instanceIndex);
+        } else if (recoveryTracking) {
+            // Evaluated every instance, not once per window: the old code only looked at window
+            // boundaries, so the shortest representable recovery was "1 window" and the metric
+            // could take barely a handful of distinct values.
+            trackRecovery(instanceIndex, windowAcc);
         }
+        pushAccHistory(windowAcc);
 
         if (!pendingDriftAfter.isEmpty()) {
             Iterator<long[]> it = pendingDriftAfter.iterator();
@@ -108,8 +166,16 @@ public final class RunDetailedRecorder {
 
         if (currentSelection != null && !sameSelection(currentSelection, lastSelection)) {
             stability.update(currentSelection);
-            String trigger = driftAlarm ? "drift_alarm"
-                    : (lastSelectionChangeInstance < 0 ? "initial" : "selection_change");
+            // Ask the selector rather than guessing from the alarm flag: an alarm-driven re-rank
+            // lands wPostDrift instances AFTER the alarm, when driftAlarm is already false.
+            String trigger;
+            if (lastSelectionChangeInstance < 0) {
+                trigger = "initial";
+            } else if (selectionTrigger != null && !selectionTrigger.isEmpty()) {
+                trigger = selectionTrigger;
+            } else {
+                trigger = driftAlarm ? "drift_alarm" : "selection_change";
+            }
             recordSelection(instanceIndex, trigger, currentSelection, driftingFeatures);
             lastSelection = currentSelection.clone();
             lastSelectionChangeInstance = instanceIndex;
@@ -117,14 +183,15 @@ public final class RunDetailedRecorder {
 
         if (instanceIndex - lastWindowEnd >= windowSize) {
             MetricsCollector.Snapshot snap = metrics.snapshot();
-            double throughput = snap.avgUpdateMicros > 0.0
-                    ? 1_000_000.0 / snap.avgUpdateMicros
+            // Throughput from the FULL step, not from predict alone. The old formula answered
+            // "how fast could this model predict if it never learned", producing up to 39.7 M
+            // instances/s and disagreeing with the run-level throughput in master_summary.csv.
+            double throughput = snap.avgStepMicros > 0.0
+                    ? 1_000_000.0 / snap.avgStepMicros
                     : 0.0;
             recordWindow(lastWindowEnd + 1, instanceIndex,
-                    snap.accuracyWindow, snap.kappa, snap.kappaPer,
-                    Double.NaN, // temporal kappa (window-local) — placeholder until exposed
-                    snap.ramHoursGB, snap.peakMB, throughput);
-            if (recoveryTracking) tickRecoveryWindow(instanceIndex, snap.accuracyWindow);
+                    snap.accuracyWindow, snap.kappa, snap.kappaTemporal,
+                    snap.ramHoursGB, snap.peakMB, throughput, snap.avgPredictMicros);
             lastWindowEnd = instanceIndex;
             windowDriftCount = 0;
         }
@@ -142,20 +209,20 @@ public final class RunDetailedRecorder {
     }
 
     private void recordWindow(long start, long end,
-                              double accuracy, double kappa, double kappaPer,
-                              double temporalKappa,
-                              double ramHoursGB, double peakMB, double throughput) {
+                              double accuracy, double kappa, double kappaTemporal,
+                              double ramHoursGB, double peakMB, double throughput,
+                              double predictLatencyMicros) {
         WindowRow r = new WindowRow();
         r.windowId = windowsEmitted++;
         r.startInstance = start;
         r.endInstance = end;
         r.accuracy = accuracy;
         r.kappa = kappa;
-        r.kappaPer = kappaPer;
-        r.temporalKappa = temporalKappa;
+        r.kappaTemporal = kappaTemporal;
         r.ramHoursGB = ramHoursGB;
         r.peakMB = peakMB;
         r.throughput = throughput;
+        r.predictLatencyMicros = predictLatencyMicros;
         r.driftCountInWindow = windowDriftCount;
         r.totalDriftCount = totalDriftCount;
         windows.add(r);
@@ -231,7 +298,43 @@ public final class RunDetailedRecorder {
         r.noReplacementCount = summary == null ? 0 : summary.getNoReplacementCount();
         r.extKeepCount = 0;
         r.extFullCount = 0;
+        // The four counters above are the ensemble-level view. DriftActionSummary already
+        // carries the per-learner detail — which learner did what, and how many of the
+        // drifting features were inside its subspace — and collapsing it here was what made
+        // "which learners does a surgical swap actually hit" unanswerable from the CSVs.
+        // Kept as three pipe-encoded columns (one entry per learner, ensemble order) so the
+        // row count is unchanged and DA-ARF rows simply leave them empty.
+        r.perLearnerAction = encodeActions(summary);
+        r.perLearnerOverlap = encodeInts(summary == null ? null : summary.getOverlapCounts());
+        r.perLearnerSubspace = encodeInts(summary == null ? null : summary.getSubspaceSizes());
         adaptations.add(r);
+    }
+
+    /** One letter per learner: K=KEEP, S=SURGICAL, F=FULL, N=NO_REPLACEMENT. */
+    private static String encodeActions(DriftActionSummary s) {
+        if (s == null) return "";
+        DriftActionSummary.Action[] actions = s.getPerLearner();
+        StringBuilder sb = new StringBuilder(actions.length * 2);
+        for (int i = 0; i < actions.length; i++) {
+            if (i > 0) sb.append('|');
+            switch (actions[i]) {
+                case KEEP:           sb.append('K'); break;
+                case SURGICAL:       sb.append('S'); break;
+                case FULL:           sb.append('F'); break;
+                case NO_REPLACEMENT: sb.append('N'); break;
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String encodeInts(int[] values) {
+        if (values == null || values.length == 0) return "";
+        StringBuilder sb = new StringBuilder(values.length * 3);
+        for (int i = 0; i < values.length; i++) {
+            if (i > 0) sb.append('|');
+            sb.append(values[i]);
+        }
+        return sb.toString();
     }
 
     public void onDAARFEvent(long instanceIndex, long extKeepDelta, long extFullDelta,
@@ -251,46 +354,91 @@ public final class RunDetailedRecorder {
         adaptations.add(r);
     }
 
-    private void startRecoveryTracking(long instanceIndex, double baselineAcc) {
+    /** Store this instance's sliding-window accuracy so later alarms can look back one window. */
+    private void pushAccHistory(double windowAcc) {
+        accHistory[accHistoryIdx] = windowAcc;
+        accHistoryIdx = (accHistoryIdx + 1) % accHistory.length;
+        if (accHistoryCount < accHistory.length) accHistoryCount++;
+    }
+
+    /**
+     * Accuracy as of one full window ago — the pre-drift baseline. Falls back to the oldest value
+     * available while the ring is still filling (early in the run).
+     */
+    private double laggedAccuracy(double fallback) {
+        if (accHistoryCount == 0) return fallback;
+        double v = (accHistoryCount < accHistory.length)
+                ? accHistory[0]                 // ring not yet wrapped: index 0 is the oldest
+                : accHistory[accHistoryIdx];    // ring full: the write head points at the oldest
+        return Double.isFinite(v) ? v : fallback;
+    }
+
+    private void startRecoveryTracking(long instanceIndex) {
         if (recoveryTracking) {
-            finishRecovery(instanceIndex, -1, true);
+            // Superseded by a fresh alarm — recorded as CANCELLED so it is not silently pooled
+            // with genuine "never recovered" episodes.
+            finishRecovery(instanceIndex, RecoveryOutcome.CANCELLED);
         }
+        double baseline = laggedAccuracy(0.0);
         driftCounter++;
         currentDriftId = driftCounter;
         currentDriftInstance = instanceIndex;
-        currentBaselineAcc = Double.isFinite(baselineAcc) ? baselineAcc : 0.0;
+        currentDropInstance = -1;
+        currentBaselineAcc = Double.isFinite(baseline) ? baseline : 0.0;
         currentThresholdAcc = currentBaselineAcc - recoveryTolerance;
         currentMaxDrop = 0.0;
         currentRecoveryArea = 0.0;
-        currentRecoveryTicks = 0;
+        dropObserved = false;
         recoveryTracking = true;
     }
 
-    private void tickRecoveryWindow(long instanceIndex, double currentAcc) {
+    /**
+     * Two-phase episode, evaluated once per instance.
+     *
+     * <p>Phase 1 waits for accuracy to actually fall below {@code baseline - tolerance}. Without
+     * this phase an episode "recovers" immediately, because right after an alarm the trailing
+     * accuracy window is still dominated by pre-drift instances and therefore still reads high —
+     * that single flaw produced {@code recovery_length == 1} for 64–90 % of all episodes.
+     *
+     * <p>Phase 2 then measures how long the accuracy takes to climb back to the threshold.
+     */
+    private void trackRecovery(long instanceIndex, double currentAcc) {
         if (!recoveryTracking) return;
-        currentRecoveryTicks++;
         if (Double.isFinite(currentAcc)) {
             double drop = Math.max(0.0, currentBaselineAcc - currentAcc);
             if (drop > currentMaxDrop) currentMaxDrop = drop;
             currentRecoveryArea += drop;
         }
-        long elapsedInstances = instanceIndex - currentDriftInstance;
-        long elapsedWindows = currentRecoveryTicks;
-        if (elapsedWindows >= 1 && Double.isFinite(currentAcc)
-                && currentAcc >= currentThresholdAcc) {
-            finishRecovery(instanceIndex, elapsedWindows, false);
-        } else if (elapsedInstances >= recoveryWindow) {
-            finishRecovery(instanceIndex, -1, false);
+        long elapsed = instanceIndex - currentDriftInstance;
+
+        if (!dropObserved) {
+            if (Double.isFinite(currentAcc) && currentAcc < currentThresholdAcc) {
+                dropObserved = true;
+                currentDropInstance = instanceIndex;
+            } else if (elapsed >= dropGraceInstances) {
+                finishRecovery(instanceIndex, RecoveryOutcome.NO_DROP);
+            }
+            return;
+        }
+
+        if (Double.isFinite(currentAcc) && currentAcc >= currentThresholdAcc) {
+            finishRecovery(instanceIndex, RecoveryOutcome.RECOVERED);
+        } else if (elapsed >= recoveryBudgetInstances) {
+            finishRecovery(instanceIndex, RecoveryOutcome.UNRECOVERED);
         }
     }
 
-    private void finishRecovery(long instanceIndex, long recoveryLength, boolean cancelled) {
+    private void finishRecovery(long instanceIndex, RecoveryOutcome outcome) {
         RecoveryRow r = new RecoveryRow();
         r.driftId = currentDriftId;
         r.driftInstance = currentDriftInstance;
-        if (recoveryLength > 0) {
+        r.outcome = outcome;
+        r.dropInstance = currentDropInstance;
+        r.instancesToDrop = (currentDropInstance < 0) ? -1 : currentDropInstance - currentDriftInstance;
+        if (outcome == RecoveryOutcome.RECOVERED) {
             r.recoveredInstance = instanceIndex;
-            r.recoveryLength = recoveryLength;
+            // Instances from the alarm to the moment accuracy is back at the pre-drift level.
+            r.recoveryLength = instanceIndex - currentDriftInstance;
         } else {
             r.recoveredInstance = -1;
             r.recoveryLength = -1;
@@ -306,17 +454,22 @@ public final class RunDetailedRecorder {
     public void finalizeAtEnd(long lastInstance, MetricsCollector metrics) {
         double windowAcc = metrics.getAccuracy().getAccuracy();
         if (recoveryTracking) {
-            finishRecovery(lastInstance, -1, false);
+            // The stream ended mid-episode: report what the episode had actually reached, rather
+            // than blanket-labelling it "never recovered".
+            finishRecovery(lastInstance,
+                    dropObserved ? RecoveryOutcome.UNRECOVERED : RecoveryOutcome.NO_DROP);
         }
         if (lastInstance > lastWindowEnd) {
             MetricsCollector.Snapshot snap = metrics.snapshot();
-            double throughput = snap.avgUpdateMicros > 0.0
-                    ? 1_000_000.0 / snap.avgUpdateMicros
+            // Throughput from the FULL step, not from predict alone. The old formula answered
+            // "how fast could this model predict if it never learned", producing up to 39.7 M
+            // instances/s and disagreeing with the run-level throughput in master_summary.csv.
+            double throughput = snap.avgStepMicros > 0.0
+                    ? 1_000_000.0 / snap.avgStepMicros
                     : 0.0;
             recordWindow(lastWindowEnd + 1, lastInstance,
-                    snap.accuracyWindow, snap.kappa, snap.kappaPer,
-                    Double.NaN,
-                    snap.ramHoursGB, snap.peakMB, throughput);
+                    snap.accuracyWindow, snap.kappa, snap.kappaTemporal,
+                    snap.ramHoursGB, snap.peakMB, throughput, snap.avgPredictMicros);
             lastWindowEnd = lastInstance;
         }
         for (long[] e : pendingDriftAfter) {
@@ -367,10 +520,36 @@ public final class RunDetailedRecorder {
         return s / selections.size();
     }
 
+    /** Mean recovery length in INSTANCES over episodes that actually recovered. */
     public double meanRecoveryLength() {
         long n = 0; double s = 0.0;
-        for (RecoveryRow r : recoveries) if (r.recoveryLength > 0) { s += r.recoveryLength; n++; }
+        for (RecoveryRow r : recoveries) {
+            if (r.outcome == RecoveryOutcome.RECOVERED && r.recoveryLength > 0) {
+                s += r.recoveryLength; n++;
+            }
+        }
         return n == 0 ? Double.NaN : s / n;
+    }
+
+    /**
+     * Mean depth of the post-alarm accuracy dip across <b>all</b> episodes (lower is better).
+     *
+     * <p>NO_DROP episodes are included with their near-zero drop on purpose: a method that
+     * absorbs a drift without degrading deserves the best possible score. That also makes this
+     * metric defined for every variant that saw at least one alarm, unlike recovery length, which
+     * is undefined whenever nothing ever recovered.
+     */
+    public double meanMaxDrop() {
+        if (recoveries.isEmpty()) return Double.NaN;
+        double s = 0.0;
+        for (RecoveryRow r : recoveries) s += r.maxDrop;
+        return s / recoveries.size();
+    }
+
+    public long recoveryOutcomeCount(RecoveryOutcome outcome) {
+        long n = 0;
+        for (RecoveryRow r : recoveries) if (r.outcome == outcome) n++;
+        return n;
     }
 
     public long selectionChangeCount() {
@@ -379,20 +558,30 @@ public final class RunDetailedRecorder {
         return c;
     }
 
-    public double meanTemporalKappa() {
+    /**
+     * Temporal kappa averaged over every window of the run.
+     *
+     * <p>Named for its aggregation on purpose. The run also reports the temporal kappa of the
+     * <i>final</i> window ({@code kappa_temporal_final}); the two used to be published as
+     * "temporal_kappa" and "kappa_per", which read as two different metrics even though both are
+     * {@link thesis.evaluation.TemporalKappa} — only the aggregation differed.
+     */
+    public double meanWindowedTemporalKappa() {
         if (windows.isEmpty()) return Double.NaN;
         double s = 0.0;
         int n = 0;
-        for (WindowRow w : windows) if (Double.isFinite(w.kappaPer)) { s += w.kappaPer; n++; }
+        for (WindowRow w : windows) if (Double.isFinite(w.kappaTemporal)) { s += w.kappaTemporal; n++; }
         return n == 0 ? Double.NaN : s / n;
     }
 
-    public double stdTemporalKappa() {
+    public double stdWindowedTemporalKappa() {
         if (windows.size() < 2) return 0.0;
-        double m = meanTemporalKappa();
+        double m = meanWindowedTemporalKappa();
         if (Double.isNaN(m)) return 0.0;
         double s = 0.0; int n = 0;
-        for (WindowRow w : windows) if (Double.isFinite(w.kappaPer)) { s += (w.kappaPer - m) * (w.kappaPer - m); n++; }
+        for (WindowRow w : windows) {
+            if (Double.isFinite(w.kappaTemporal)) { s += (w.kappaTemporal - m) * (w.kappaTemporal - m); n++; }
+        }
         return n < 2 ? 0.0 : Math.sqrt(s / (n - 1));
     }
 
@@ -411,11 +600,22 @@ public final class RunDetailedRecorder {
         public long endInstance;
         public double accuracy;
         public double kappa;
-        public double kappaPer;
-        public double temporalKappa;
+        /**
+         * Temporal kappa (κ_per / κ_+) as it stood at the end of this window. Because the
+         * collector's temporal-kappa window and the reporting window are both {@code windowSize}
+         * long and their boundaries align, this is the window-local value.
+         *
+         * <p>There used to be a second field here, {@code temporalKappa}, written as a literal
+         * {@code Double.NaN} placeholder "until exposed" — it reached the CSV as a column that was
+         * NaN in 100 % of rows while duplicating the name of the metric already stored here.
+         */
+        public double kappaTemporal;
         public double ramHoursGB;
         public double peakMB;
+        /** Instances per second for the complete prequential step (predict + detect + select + train). */
         public double throughput;
+        /** Mean {@code model.predict()} latency in microseconds — inference cost on its own. */
+        public double predictLatencyMicros;
         public long driftCountInWindow;
         public long totalDriftCount;
     }
@@ -452,8 +652,14 @@ public final class RunDetailedRecorder {
     public static final class RecoveryRow {
         public long driftId;
         public long driftInstance;
+        /** Instance at which accuracy first fell below the threshold, or -1 if it never did. */
+        public long dropInstance;
+        /** Instances from the alarm to the observed drop, or -1 for NO_DROP episodes. */
+        public long instancesToDrop;
         public long recoveredInstance;
+        /** Instances from alarm to full recovery; -1 unless {@code outcome == RECOVERED}. */
         public long recoveryLength;
+        public RecoveryOutcome outcome = RecoveryOutcome.NO_DROP;
         public double baselineAccuracyBeforeDrift;
         public double thresholdAccuracy;
         public double maxDrop;
@@ -469,5 +675,9 @@ public final class RunDetailedRecorder {
         public long noReplacementCount;
         public long extKeepCount;
         public long extFullCount;
+        /** Pipe-encoded per-learner detail; empty for DA-ARF events. See onDASRPEvent. */
+        public String perLearnerAction = "";
+        public String perLearnerOverlap = "";
+        public String perLearnerSubspace = "";
     }
 }
