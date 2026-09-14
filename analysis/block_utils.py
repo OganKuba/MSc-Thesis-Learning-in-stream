@@ -305,8 +305,6 @@ def plot_alarm_timeline(block: str, drift_alarms: pd.DataFrame, fname_prefix: st
             vd = sub[sub.variant == v].sort_values("instance_index")
             x = vd.instance_index.values
             d = vd.delta_acc.values
-            # Literal colours (not C2/C3 cycle indices, which shift meaning whenever
-            # config.PALETTE is reordered): green = useful, orange = harmful, grey = neutral.
             colors = np.where(d >= ALARM_USEFUL_DELTA, "#1a9850",
                               np.where(d <= -ALARM_USEFUL_DELTA, "#d55e00", "0.6"))
             ax.vlines(x, 0.0, d, colors=colors, linewidth=1.8, alpha=0.95)
