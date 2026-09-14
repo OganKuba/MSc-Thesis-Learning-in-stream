@@ -12,33 +12,6 @@ import java.util.HashSet;
 import java.util.Random;
 import java.util.Set;
 
-/**
- * Drift-Adaptive Adaptive Random Forest (DA-ARF).
- *
- * <p>Custom ensemble of {@link ARFHoeffdingTree} base learners with three modifications:
- * <ul>
- *   <li><b>Component A — drift adaptation.</b> Each learner owns a per-tree ADWIN that watches its
- *       training error: on <i>warning</i> a background learner is spawned with a freshly resampled
- *       importance-weighted subspace; on <i>drift</i> the background replaces the foreground (or
- *       full reset if no background exists). External {@code train(..., driftAlarm, drifting)}
- *       calls trigger a conservative KEEP/FULL pass: only learners whose subspace overlaps
- *       low-importance drifting features are eligible for reset, and the number of resets per
- *       alarm is capped; high-importance drifting features are treated as unstable but still
- *       potentially predictive.</li>
- *   <li><b>Component B — importance-weighted sampling.</b> Per-learner subspaces are drawn from
- *       {@link WeightedSubspaceSampler} using a {@link FeatureImportance} pool (sharpened by
- *       {@code importancePower} and blended toward uniform by {@code samplingBeta}). When no
- *       importance is provided the sampler falls back to uniform.</li>
- *   <li><b>Component C — top-K rank-weighted voting.</b> {@link #predictProba} ranks learners by
- *       recent sliding-window accuracy and aggregates the top {@code ceil(topKFraction · N)}
- *       learners with descending integer weights {@code w_r = (K - r)}.</li>
- * </ul>
- *
- * <p>The wrapper is feature-pool aware: the supplied {@link FeatureSelector} is kept for
- * interface compatibility but the model itself routes the FULL feature space — each base learner
- * applies its own filtered header. This mirrors the {@code useHardFilter=false} contract of
- * {@link DriftAwareSRP}.
- */
 public class DAARFWrapper implements ModelWrapper {
 
     @Getter private final FeatureSelector selector;
@@ -58,26 +31,16 @@ public class DAARFWrapper implements ModelWrapper {
     @Getter private double unstableImportanceQuantile = 0.50;
     @Getter private double externalResetFraction = 0.20;
 
-    /** How the external (detector-driven) KEEP/FULL pass replaces an eligible learner. */
     public enum ExternalActionMode {
-        /** Original behaviour: rebuild the learner from scratch (fresh subspace + tree). */
         RESET,
-        /** Surgical: swap only the drifting features in the subspace, keep the trained tree. */
         SURGICAL
     }
 
     @Getter private ExternalActionMode externalActionMode = ExternalActionMode.RESET;
-    /** A4: when false, the intrinsic per-tree ADWIN drift/warning channel is disabled entirely. */
     @Getter private boolean intrinsicDriftEnabled = true;
-    /** A3: when true, the external pass skips learners that already have a pending background. */
     @Getter private boolean gateExternalOnPendingBackground = false;
-    /** Score tolerance for accepting a surgical replacement (mirrors DriftAwareSRP). */
     @Getter private double surgicalReplacementTolerance = 0.95;
 
-    // A7: base-tree hyperparameters. Defaults match MOA AdaptiveRandomForest's tree config
-    // ("ARFHoeffdingTree -e 2000000 -g 50 -c 0.01"). The old code left HoeffdingTree defaults
-    // (grace=200, confidence=1e-7), producing shallow trees that collapsed to majority on
-    // imbalanced streams and handicapped DA-ARF vs the ARF baseline it is compared against.
     @Getter private int treeGracePeriod = 50;
     @Getter private double treeSplitConfidence = 0.01;
 
@@ -199,11 +162,6 @@ public class DAARFWrapper implements ModelWrapper {
         this.surgicalReplacementTolerance = tolerance;
     }
 
-    /**
-     * A7: override base-tree split hyperparameters and rebuild the ensemble. Must be called
-     * before any training (the runner calls it right after construction). Defaults already
-     * match MOA ARF, so this is only needed for sensitivity analysis.
-     */
     public void setTreeParams(int gracePeriod, double splitConfidence) {
         if (gracePeriod < 1) throw new IllegalArgumentException("gracePeriod must be >= 1");
         if (!(splitConfidence > 0.0 && splitConfidence < 1.0))
@@ -232,9 +190,6 @@ public class DAARFWrapper implements ModelWrapper {
     private ARFHoeffdingTree newTree(int dim, InstancesHeader header) {
         ARFHoeffdingTree t = new ARFHoeffdingTree();
         t.subspaceSizeOption.setValue(dim);
-        // A7: match MOA AdaptiveRandomForest's tree config so DA-ARF is not handicapped vs the
-        // ARF baseline it is compared to. HoeffdingTree defaults (grace=200, confidence=1e-7)
-        // build far too shallow trees -> majority-collapse on imbalanced streams (NHTS).
         t.gracePeriodOption.setValue(treeGracePeriod);
         t.splitConfidenceOption.setValue(treeSplitConfidence);
         t.maxByteSizeOption.setValue(2000000);
@@ -371,7 +326,7 @@ public class DAARFWrapper implements ModelWrapper {
             bl.updateWindow(err == 0);
             if (k > 0) bl.train(full, space, classLabel, k);
 
-            // Background learner (if present) trains in parallel on the same instance.
+            // Background learner (if present) trains in parallel on the same
             if (bl.background != null) {
                 int kb = poisson(lambda, rng);
                 if (kb > 0) bl.background.train(full, space, classLabel, kb);
@@ -388,8 +343,6 @@ public class DAARFWrapper implements ModelWrapper {
     }
 
     private void handleIntrinsicDrift(int idx, int err) {
-        // A4: intrinsic per-tree drift management fully disabled — external layer is
-        // the sole reset authority. Lets the ablation isolate which layer hurts.
         if (!intrinsicDriftEnabled) return;
 
         BaseLearner bl = ensemble[idx];
@@ -429,8 +382,6 @@ public class DAARFWrapper implements ModelWrapper {
         int candidateCount = 0;
         for (int i = 0; i < ensembleSize; i++) {
             BaseLearner bl = ensemble[i];
-            // A3: do not fight the intrinsic mechanism — a learner already adapting via
-            // a pending background is left alone by the external pass.
             if (gateExternalOnPendingBackground && bl.background != null) {
                 extGatedSkipCount++;
                 continue;
@@ -470,19 +421,12 @@ public class DAARFWrapper implements ModelWrapper {
         return m;
     }
 
-    /**
-     * A2: replace only the drifting features inside a learner's subspace with the
-     * best-scoring, type-compatible non-drifting features, keeping the trained tree.
-     * Mirrors {@link DriftAwareSRP} surgical semantics. Returns true if a swap happened.
-     */
     private boolean surgicalReplaceLearner(int idx, boolean[] driftingMask) {
         BaseLearner bl = ensemble[idx];
         double[] scores = (importance == null) ? null : importance.getImportance();
         if (scores == null || scores.length != origDim) return false;
         int[] newSub = surgicalReplaceSubspace(bl.subspace, driftingMask, scores);
         if (Arrays.equals(newSub, bl.subspace)) return false;
-        // Re-point the projection to the new features; reduced header stays structurally
-        // identical (type-compatible swaps) so the tree's learned splits remain valid.
         bl.subspace = newSub;
         bl.reducedHeader = FilteredHeaderBuilder.build(space, newSub, "_daarf");
         return true;
@@ -601,7 +545,7 @@ public class DAARFWrapper implements ModelWrapper {
     }
 
     private static int poisson(double lambda, Random rng) {
-        // Knuth's algorithm — fine for small λ (≤ 10) used in MOA bagging.
+        // Knuth's algorithm - fine for small λ (≤ 10) used in MOA bagging.
         double L = Math.exp(-lambda);
         int k = 0;
         double p = 1.0;
@@ -611,7 +555,7 @@ public class DAARFWrapper implements ModelWrapper {
 
     @Override
     public int[] getCurrentSelection() {
-        // Union of per-learner subspaces (sorted, deduped) — exposed for diagnostics
+        // Union of per-learner subspaces (sorted, deduped) - exposed for
         HashSet<Integer> u = new HashSet<>();
         for (BaseLearner bl : ensemble) for (int s : bl.subspace) u.add(s);
         int[] out = new int[u.size()];
@@ -633,10 +577,6 @@ public class DAARFWrapper implements ModelWrapper {
         return out;
     }
 
-    /**
-     * Sum over every live tree: each foreground learner plus any pending background learner
-     * (a background tree is real, resident memory and must be charged to the model).
-     */
     @Override
     public long modelByteSize() {
         long total = 0L;
@@ -668,7 +608,6 @@ public class DAARFWrapper implements ModelWrapper {
                 + ", topK=" + topKFraction + ", bkg=" + useBackgroundLearner + ")";
     }
 
-    /** Per-base-learner state. */
     private static final class BaseLearner {
         int[] subspace;
         InstancesHeader reducedHeader;

@@ -10,6 +10,7 @@ public class MetricsCollector {
     private final int ramSampleEvery;
 
     private final CohenKappa kappa;
+    private final CumulativeKappa kappaCumulative;
     private final TemporalKappa kappaTemporal;
     private final PrequentialAccuracy accuracy;
     private final RecoveryTime recovery;
@@ -17,18 +18,11 @@ public class MetricsCollector {
     private final FeatureStabilityRatio stability;
 
     private long instances;
-    /** Time spent inside {@code model.predict()} only — inference latency. */
     private long totalPredictNanos;
-    /** Time for the whole prequential step: predict + drift detection + selection + training. */
     private long totalStepNanos;
     private long correctTotal;
     private long driftCount;
 
-    /**
-     * Supplies the model's deep byte size for RAM-Hours. When left unset the collector falls back
-     * to the legacy whole-JVM reading, which is only meaningful for single-threaded diagnostics —
-     * the experiment runner always installs a supplier.
-     */
     private java.util.function.LongSupplier modelSizeSupplier;
 
     public MetricsCollector(int numClasses) { this(numClasses, 1000, 1000, 100); }
@@ -42,6 +36,7 @@ public class MetricsCollector {
         this.logEvery = logEvery;
         this.ramSampleEvery = ramSampleEvery;
         this.kappa = new CohenKappa(numClasses, windowSize);
+        this.kappaCumulative = new CumulativeKappa(numClasses);
         this.kappaTemporal = new TemporalKappa(windowSize);
         this.accuracy = new PrequentialAccuracy(windowSize);
         this.recovery = new RecoveryTime();
@@ -50,27 +45,15 @@ public class MetricsCollector {
         this.ram.start();
     }
 
-    /**
-     * Legacy two-timer-in-one form: the supplied duration is charged as both the inference
-     * latency and the cost of the whole step. Only appropriate where nothing else happens per
-     * instance; the experiment runner uses the four-argument form.
-     */
     public void update(int yTrue, int yPred, long elapsedNanos) {
         update(yTrue, yPred, elapsedNanos, elapsedNanos);
     }
 
-    /**
-     * @param predictNanos time inside {@code model.predict()} — inference latency
-     * @param stepNanos    time for the entire prequential step (predict + detector + selector +
-     *                     train). Throughput must be derived from this one: deriving it from
-     *                     {@code predictNanos} answers "how fast could this model predict if it
-     *                     never learned anything", which for a majority-class baseline came out at
-     *                     ~40 million instances/s.
-     */
     public void update(int yTrue, int yPred, long predictNanos, long stepNanos) {
         if (predictNanos < 0) predictNanos = 0;
         if (stepNanos < 0) stepNanos = 0;
         kappa.update(yTrue, yPred);
+        kappaCumulative.update(yTrue, yPred);
         kappaTemporal.update(yTrue, yPred);
         accuracy.update(yTrue, yPred);
         recovery.tick();
@@ -88,11 +71,6 @@ public class MetricsCollector {
         else ram.sampleFromRuntime();
     }
 
-    /**
-     * Install the model-size source for RAM-Hours (typically {@code model::modelByteSize}).
-     * Without it the collector measures the whole JVM heap, which is shared across concurrently
-     * running experiments and therefore not attributable to any one model.
-     */
     public void setModelSizeSupplier(java.util.function.LongSupplier supplier) {
         this.modelSizeSupplier = supplier;
     }
@@ -134,6 +112,7 @@ public class MetricsCollector {
         s.accuracyOverall = instances == 0 ? 0.0 : (double) correctTotal / instances;
         s.accuracyWindow = accuracy.getAccuracy();
         s.kappa = kappa.getKappa();
+        s.kappaCumulative = kappaCumulative.getKappa();
         s.kappaTemporal = kappaTemporal.getKappaTemporal();
         s.driftCount = driftCount;
         s.lastRecoveryTime = recovery.getLastRecoveryTime();
@@ -153,6 +132,7 @@ public class MetricsCollector {
     }
 
     public CohenKappa getKappa()                    { return kappa; }
+    public CumulativeKappa getKappaCumulative()     { return kappaCumulative; }
     public TemporalKappa getKappaTemporal()         { return kappaTemporal; }
     public PrequentialAccuracy getAccuracy()        { return accuracy; }
     public RecoveryTime getRecovery()               { return recovery; }
@@ -168,7 +148,7 @@ public class MetricsCollector {
         public double accuracyOverall;
         public double accuracyWindow;
         public double kappa;
-        /** Temporal kappa over the most recent window (a.k.a. kappa_per / kappa_+). */
+        public double kappaCumulative;
         public double kappaTemporal;
         public long driftCount;
         public int lastRecoveryTime;
@@ -182,9 +162,7 @@ public class MetricsCollector {
         public double ramHoursGB;
         public double peakMB;
         public double elapsedHours;
-        /** Mean {@code model.predict()} latency in microseconds. */
         public double avgPredictMicros;
-        /** Mean cost of a full prequential step in microseconds — the basis for throughput. */
         public double avgStepMicros;
     }
 }

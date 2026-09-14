@@ -10,7 +10,6 @@ import java.util.Set;
 
 public class PeriodicSelector implements FeatureSelector {
 
-    /** Periodic re-selection is this selector's only trigger. */
     private String lastSelectionTrigger = "initial";
 
     @Override

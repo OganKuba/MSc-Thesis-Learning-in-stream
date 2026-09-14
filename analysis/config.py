@@ -41,8 +41,6 @@ SYNTHETIC_DATASETS = {
     "SEA-Low", "SEA-HiDyn",
     "FeatureDrift-Low", "FeatureDrift-HiDyn",
     "RandomRBF-Low", "RandomRBF-HiDyn",
-    # STAGGER-HiDyn survives only in E5 (there k=8 still includes the +S1 variants, whose
-    # collapse at K=ceil(sqrt(3))=2 is what makes the stream discriminate at all).
     "STAGGER-HiDyn",
 }
 REAL_DATASETS = {"YahooFinance", "NYCTaxi", "NHTS"}
@@ -71,15 +69,10 @@ E2_VARIANT_ORDER = [
 E3_VARIANT_ORDER = [
     "SRP", "SRP+S1",
     "ARF", "ARF+S2",
-    # DA-ARF-ABC = repaired default (tuned trees + 0.5 subspace). The untuned/narrow repair
-    # ablation was a one-off diagnostic (numbers in THESIS_IMPROVEMENT_PLAN.md), not kept here.
     "DA-ARF-A", "DA-ARF-AB", "DA-ARF-ABC",
     # DA-SRP-* run on the reflection-free native ensemble (Option B).
     "DA-SRP-A", "DA-SRP-AB", "DA-SRP-ABC",
 ]
-# k=4, not 6: Nemenyi CD scales with k(k+1) but only with sqrt(N), so dropping the two +S1
-# variants (which belong to E2, the feature-selection block) buys more power than adding
-# datasets would. CD goes 3.77 -> 1.91, i.e. below half the 1..4 rank scale.
 E4_VARIANT_ORDER = ["ARF", "SRP", "DA-ARF-ABC", "DA-SRP-ABC"]
 E5_VARIANT_ORDER = [
     "ARF+ADWIN", "SRP+ADWIN", "ARF+S1+ADWIN", "SRP+S1+ADWIN",
@@ -95,6 +88,7 @@ VARIANT_ORDER_BY_BLOCK = {
 }
 
 DRIFT_POINTS_E1E3 = {
+    "NHTS": [1041075, 1957756],
     "SEA": [25000, 50000, 75000],
     "STAGGER": [20000, 40000, 60000],
     "Hyperplane": "continuous",
@@ -103,10 +97,6 @@ DRIFT_POINTS_E1E3 = {
     "LED": "continuous",
 }
 
-# Recomputed from SyntheticStreamFactory.buildCyclicAbruptStream:
-#   segments = num_drifts + 1, step = n // segments, drift k at k*step  (n = 100_000).
-# The previous values were wrong for every entry — SEA-HiDyn has 10 drifts, not 3, and none of
-# the marked positions matched where the generator actually switches concepts.
 DRIFT_POINTS_E4E5 = {
     "SEA-Low": [25000, 50000, 75000],
     "SEA-HiDyn": [9090, 18180, 27270, 36360, 45450,
@@ -121,13 +111,6 @@ DRIFT_POINTS_E4E5 = {
     "RandomRBF": "continuous",
 }
 
-# --- Saturated datasets (B3) --------------------------------------------
-# On the low-dynamics blocks (E1/E2/E3) the generic STAGGER stream saturates:
-# kappa == accuracy == 1.000 for every serious model, so those rows/bars are
-# empty. We drop STAGGER from kappa/accuracy tables & plots for those blocks,
-# but keep it for kappa_temporal (which does discriminate). STAGGER-Low was removed from E4
-# entirely (all 6 variants scored exactly 1.0000, a rank row of 3.5s carrying zero information);
-# STAGGER-HiDyn remains only in E5 and is left untouched there.
 SATURATED_DATASETS_BY_BLOCK = {
     "E1": {"STAGGER"},
     "E2": {"STAGGER"},
@@ -135,21 +118,12 @@ SATURATED_DATASETS_BY_BLOCK = {
 }
 SATURATED_METRICS = {"kappa_mean", "accuracy_mean"}
 
-# --- Noise-feature ground truth (B4) ------------------------------------
-# Synthetic streams are augmented with `noise_features` random columns that
-# are appended AFTER the signal features (see SyntheticStreamFactory.
-# NoiseAugmentedStream.buildHeader), so the noise indices are always the LAST
-# N feature columns. Keyed by dataset name; datasets not listed (real ARFFs and STAGGER) have
-# no known noise ground truth. Values track master_experiments.json.
 NOISE_FEATURES = {
     "SEA": 5,
     "Hyperplane": 5,
     "RandomRBF": 5,
     "FeatureDrift": 5,
     "CustomFeatureDrift": 5,
-    # Every E4 stream now carries the same 5 noise features, so a Low/HiDyn contrast varies
-    # drift intensity ONLY. Previously SEA-Low had 0 and SEA-HiDyn had 5, which confounded
-    # drift frequency with feature-space size (3 vs 8 features, K=2 vs K=3).
     "SEA-Low": 5,
     "SEA-HiDyn": 5,
     "FeatureDrift-Low": 5,
@@ -158,86 +132,44 @@ NOISE_FEATURES = {
     "RandomRBF-HiDyn": 5,
     "STAGGER": 0,
     "STAGGER-HiDyn": 0,
-    # LED: 7 relevant segment attributes (idx 0-6) + 17 irrelevant (idx 7-23),
-    # so the irrelevant ones are the last 17 — exactly the noise-annotation convention.
     "LED": 17,
 }
 
-# Metrics with pre-computed stat_tests/ outputs from UnifiedStreamExperimentRunner.
+# Metrics with pre-computed stat_tests/ outputs from
 STAT_METRICS = [
     "accuracy",
     "kappa",
-    # Temporal kappa averaged over all windows. Formerly listed twice, as "kappa_per" and
-    # "temporal_kappa" — both were the same TemporalKappa metric, differing only in aggregation
-    # (final window vs mean over windows), so each block emitted two redundant CD diagrams.
     "kappa_temporal",
     "recovery_time",
-    # Depth of the post-alarm accuracy dip. Defined for every variant that saw an alarm, whereas
-    # recovery_time is NaN whenever no episode ever closed — so this keeps the Friedman test on
-    # the full set of datasets instead of the subset where something happened to recover.
     "recovery_max_drop",
     "ram_hours_gb",
 ]
 
-# --- RAM-Hours reporting units -------------------------------------------
-# RAM-Hours are integrated over the DEEP SIZE OF THE MODEL (thesis.models.ModelSize via MOA's
-# sizeofag agent), not over the JVM heap. Learners here hold 0.03-0.26 MB and run for minutes,
-# so the raw metric sits around 1e-6 GB-h and rounds to "0.00" at any sane table precision.
-# Tables and the Pareto figure therefore report RAMh * RAMH_SCALE, with the unit in the caption.
 RAMH_SCALE = 1e6
 RAMH_UNIT_TEX = r"$10^{-6}$ GB$\cdot$h"
 
-# --- Output budget -------------------------------------------------------
-# The pipeline used to emit 413 artefacts while the thesis cited 39 figures and 40 tables.
-# The three settings below cut that to roughly what is actually used, without removing any
-# generator: switch a value back and the corresponding output returns.
 
-# Formats written by plot_utils.save_fig. The thesis pulls only .pdf via \includegraphics, so
-# writing a .png twin for every figure doubled the directory for nothing. Add "png" for slides.
 FIGURE_FORMATS = ["pdf"]
 
-# Datasets that get their OWN figure from the per-dataset generators (window timeseries, alarm
-# timeline, adaptation timeline, selection timeline, noise-annotated importance). Those five
-# functions loop over every dataset in the block and were responsible for ~120 of the unused
-# figures; the aggregate views (e*_drift_alarm_counts, e*_feature_importance_heatmap) already
-# cover the rest. Listed datasets mirror what main.tex cites. Empty list = aggregates only.
 PER_DATASET_FIGURES = {
     "E1": ["SEA", "Hyperplane", "NHTS", "YahooFinance"],
     "E2": ["FeatureDrift", "Hyperplane"],
-    "E3": ["FeatureDrift", "Hyperplane", "NYCTaxi", "YahooFinance"],
-    # E4 lost STAGGER (saturated); FeatureDrift-* is the replacement contrast in the thesis.
+    "E3": ["SEA", "FeatureDrift", "Hyperplane", "NYCTaxi", "YahooFinance"],
     "E4": ["SEA-Low", "SEA-HiDyn", "FeatureDrift-Low", "FeatureDrift-HiDyn"],
-    # E5 used to be empty, which left the detector block without a single temporal figure —
-    # even though "WHEN does each detector fire" is exactly its research question. Two datasets
-    # give the abrupt/continuous contrast: SEA-HiDyn (abrupt, frequent) vs Hyperplane
-    # (continuous). RandomRBF duplicates Hyperplane's regime and STAGGER-HiDyn saturates.
     "E5": ["Hyperplane", "SEA-HiDyn"],
 }
 
-# Metrics that get an avg_ranks table. Previously every metric in STAT_METRICS did, i.e. 6 per
-# block = 30 tables, none of which the thesis cited — it uses friedman + nemenyi_kappa +
-# wilcoxon_kappa instead.
 RANK_TABLE_METRICS = ["kappa"]
 
-# Per-dataset generators switched off, per figure and per block. These produced one file per
-# dataset per block and were mostly uncited: the accuracy timeseries duplicates the kappa one and
-# the noise-annotated importance panel duplicates e*_feature_importance_heatmap.
-#
-# Value is either "all" (off everywhere) or a list of blocks it is off for. Use
-# figure_disabled(name, block) rather than reading this directly.
 DISABLED_FIGURES = {
     "accuracy_timeseries": "all",
     "importance_noise": "all",
-    # The alarm timeline is redundant with the aggregate e*_drift_alarm_counts wherever the
-    # question is only "how many alarms". In E5 the question is "when, and did the alarm buy
-    # anything" — the timeline now colours each alarm by the accuracy it recovered, which no
-    # aggregate view shows, so it stays on for that block alone.
     "alarm_timeline": ["E1", "E2", "E3", "E4"],
 }
 
 
 def figure_disabled(name: str, block: str | None = None) -> bool:
-    """True when figure generator `name` is switched off (globally, or for this block)."""
+    """True when figure generator `name` is switched off (globally, or for."""
     rule = DISABLED_FIGURES.get(name)
     if rule is None:
         return False
@@ -245,12 +177,16 @@ def figure_disabled(name: str, block: str | None = None) -> bool:
         return True
     return block in rule
 
-# CD diagrams exported to figures/. Kappa is the headline metric; recovery_max_drop is included
-# because it is the only recovery metric that reaches significance (E2/E3/E4) now that
-# recovery_time turned out to discriminate nowhere.
 CD_DIAGRAM_METRICS = ["kappa", "recovery_max_drop"]
 
-PALETTE = "colorblind"
+# Same 10 colours as seaborn's "colorblind" palette (still colorblind-safe), reordered so that
+# hue-similar neighbours in the original sequence (e.g. the three oranges/browns at positions
+# 1/3/5, the two pinks at 4/6) are spread apart instead of landing next to each other. This
+# matters because most figures use a *prefix* of this list (one colour per variant, in variant
+# order), so with many variants (8-10) two adjacent, similarly-hued lines used to be easy to
+# confuse, especially combined with the 4-way linestyle cycle (index i and i+4 share a linestyle).
+PALETTE = ["#0173b2", "#de8f05", "#cc78bc", "#029e73", "#d55e00",
+           "#fbafe4", "#949494", "#ca9161", "#ece133", "#56b4e9"]
 SNS_STYLE = "whitegrid"
 FONT_SCALE = 1.05
 FIG_DPI = 300
@@ -271,3 +207,9 @@ PLOT_RC = {
 }
 
 ALPHA = 0.05
+
+ARFF_FILES = {
+    "NYCTaxi": ROOT / "preproccessing" / "nyc_taxi" / "data" / "arff" / "nyc_taxi.arff",
+    "NHTS": ROOT / "preproccessing" / "data" / "arff" / "nhts.arff",
+    "YahooFinance": ROOT / "preproccessing" / "yahoo_finance" / "data" / "arff" / "yahoo_finance.arff",
+}

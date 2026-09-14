@@ -15,7 +15,7 @@ RELATION_NAME = "nhts_stream"
 TARGET_COL = "mode_target"
 DROP_COLS = {
     "houseid", "personid", "tdaydate", "strttime",
-    "nhts_year", "edition_year",
+    "nhts_year", "edition_year", "edition_boundary",
 }
 
 

@@ -24,18 +24,6 @@ public class RAMHours {
         unavailable = false;
     }
 
-    /**
-     * Preferred sampling path: charge the metric with the <b>model's</b> deep size, per the
-     * RAM-Hours definition (GB held by the model, integrated over time).
-     *
-     * <p>A negative {@code modelBytes} means the size could not be measured (the {@code sizeofag}
-     * java agent is not loaded). That is recorded as <i>unavailable</i> — {@link #getRamHours()}
-     * and {@link #getPeakMB()} then return {@code NaN} — rather than being clamped to 0 or
-     * silently replaced by a whole-JVM reading, either of which would put a fabricated number
-     * into the results.
-     *
-     * @see thesis.models.ModelSize
-     */
     public void sampleModelSize(long modelBytes) {
         if (!started) start();
         if (modelBytes < 0) {
@@ -45,7 +33,6 @@ public class RAMHours {
         sample(modelBytes);
     }
 
-    /** True once a model-size sample could not be measured; RAM metrics are then NaN. */
     public boolean isUnavailable() { return unavailable; }
 
     public void sample(long usedBytes) {
@@ -76,13 +63,6 @@ public class RAMHours {
         if (peakBytes < 0 || usedBytes > peakBytes) peakBytes = usedBytes;
     }
 
-    /**
-     * Legacy whole-JVM sampling. <b>Do not use for reported results</b>: it measures the entire
-     * heap, which the runner's thread pool shares between concurrent runs, so the value depends on
-     * what else happens to be executing. Kept only for standalone diagnostics.
-     *
-     * @deprecated use {@link #sampleModelSize(long)} with {@code ModelWrapper.modelByteSize()}.
-     */
     @Deprecated
     public void sampleFromRuntime() {
         Runtime r = Runtime.getRuntime();

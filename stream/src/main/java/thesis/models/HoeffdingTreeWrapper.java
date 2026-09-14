@@ -11,7 +11,6 @@ import java.util.Set;
 
 public class HoeffdingTreeWrapper implements ModelWrapper {
 
-    /** MOA's own default ({@code AbstractClassifier.randomSeedOption}) — keeps legacy behaviour. */
     public static final int DEFAULT_SEED = 1;
 
     @Getter private final FeatureSelector selector;
@@ -61,10 +60,6 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
         HoeffdingTree t = new HoeffdingTree();
         t.gracePeriodOption.setValue(gracePeriod);
         t.splitConfidenceOption.setValue(splitConfidence);
-        // Accepted for API symmetry with ARF/SRP, but a no-op in practice: MOA's HoeffdingTree
-        // reports isRandomizable()=false, so randomSeedOption is null and training is fully
-        // deterministic. HT therefore yields identical results across seeds on a fixed stream —
-        // that is correct algorithm behaviour, not the seed-propagation bug ARF/SRP had.
         t.setRandomSeed(seed);
         t.prepareForUse();
         return t;

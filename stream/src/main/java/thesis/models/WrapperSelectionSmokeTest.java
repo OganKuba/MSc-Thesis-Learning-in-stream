@@ -49,7 +49,7 @@ public class WrapperSelectionSmokeTest {
         testSRPHardFilterDefaultIsTrue();
         testARFHardFilterDefaultIsTrue();
 
-        testSRPDriftAlarmFlowsToSelector();
+        testWrappersDoNotDriveSelector();
 
         System.out.println("=".repeat(70));
         System.out.printf("RESULT: %d passed, %d failed%n", passed, failed);
@@ -57,7 +57,7 @@ public class WrapperSelectionSmokeTest {
         if (failed > 0) System.exit(1);
     }
 
-    // ── helpers (jak w ModelsSmokeTest) ────────────────────────────────────
+    // ── helpers (jak w ModelsSmokeTest)
 
     private static InstancesHeader makeHeader(int F, int numClasses, int classPos) {
         ArrayList<Attribute> attrs = new ArrayList<>(F + 1);
@@ -111,7 +111,6 @@ public class WrapperSelectionSmokeTest {
         return makeInstance(h, vals);
     }
 
-    /** Recording selector — pozwala wymusić dowolną selekcję i podejrzeć update calls. */
     private static final class RecordingSelector implements FeatureSelector {
         private int[] selection;
         private final int F, C;
@@ -158,14 +157,13 @@ public class WrapperSelectionSmokeTest {
         void setSelection(int[] s) { this.selection = s.clone(); }
     }
 
-    // ── 1. Reduced header arity = K+1 ──────────────────────────────────────
+    // ── 1. Reduced header arity = K+1
 
     private static void testHTReducedHeaderArity() {
         int F = 5, K = 2;
         InstancesHeader h = makeHeader(F, 2, F);
         FeatureSelector sel = new RecordingSelector(F, 2, new int[]{1, 3});
         HoeffdingTreeWrapper m = new HoeffdingTreeWrapper(sel, h);
-        // pośrednio sprawdzamy przez predict — ale najlepiej przez liczbę atrybutów filtra:
         Instance probe = fullInstance(h, new double[]{1, 2, 3, 4, 5}, 0);
         Instance filt = FilteredHeaderBuilder.filteredInstance(probe,
                 new FeatureSpace(h), m.getCurrentSelection(),
@@ -198,7 +196,7 @@ public class WrapperSelectionSmokeTest {
                 red.numAttributes() == K + 1 && red.classIndex() == K);
     }
 
-    // ── 2. Zmiana selekcji NAPRAWDĘ zmienia widok modelu ───────────────────
+    // ── 2. Zmiana selekcji NAPRAWDĘ zmienia widok modelu
 
     private static void testHTSelectionChangesModelInput() {
         int F = 4;
@@ -241,9 +239,6 @@ public class WrapperSelectionSmokeTest {
                 beforeAttrs == 2 && afterAttrs == 4);
     }
 
-    // ── 3. predict używa wartości tylko z wybranych atrybutów ──────────────
-    //   wkładamy „śmieci" w nieselekowanych atrybutach — predykcja musi
-    //   pozostać taka sama jak dla czystego wektora (te wartości nie docierają do modelu).
 
     private static int trainAccOnSelection(ModelWrapper m, InstancesHeader h,
                                            double[][] data, int[] y, int trainN) {
@@ -271,8 +266,6 @@ public class WrapperSelectionSmokeTest {
             if (pClean == pDirty) sameCount++;
             total++;
         }
-        // jeżeli model NAPRAWDĘ widzi tylko wybrane atrybuty, śmieci poza selekcją
-        // nie wpływają → 100% zgodności. Tolerujemy 99% by uniknąć FP od side-effects.
         double agree = sameCount / (double) total;
         report(tag + " ignores non-selected attributes (agree=" + sameCount + "/" + total + ")",
                 agree >= 0.99);
@@ -308,8 +301,6 @@ public class WrapperSelectionSmokeTest {
         assertSelectionInsensitivity("SRP", new SRPWrapper(sel, h, 3, 6.0, false, true), h, data, y);
     }
 
-    // ── 4. K=1 vs K=full → modele MUSZĄ się różnić w predykcjach ───────────
-    //   to jest kluczowy test antyregresji „S1=S2=S3=S4".
 
     private static int countDiff(ModelWrapper a, ModelWrapper b,
                                  InstancesHeader h, double[][] data, int[] y,
@@ -372,9 +363,6 @@ public class WrapperSelectionSmokeTest {
                 diff > 10);
     }
 
-    // ── 5. train: model nigdy nie dostaje pełnego wektora ──────────────────
-    //   Sprawdzamy przez monkey-patching: śmieci w niewybranych pozycjach
-    //   nie psują accuracy względem czystego treningu.
 
     private static double accuracy(ModelWrapper m, InstancesHeader h,
                                    double[][] data, int[] y, int from, int to) {
@@ -403,7 +391,6 @@ public class WrapperSelectionSmokeTest {
         }
         double a1 = accuracy(clean, h, data, y, 1500, 1800);
         double a2 = accuracy(noisy, h, data, y, 1500, 1800);
-        // Modele powinny być prawie identyczne — wartości poza selekcją nie wchodzą do modelu.
         report(tag + " train ignores non-selected attrs (acc clean="
                         + String.format("%.3f", a1) + ", noisy=" + String.format("%.3f", a2) + ")",
                 Math.abs(a1 - a2) < 0.05);
@@ -450,7 +437,7 @@ public class WrapperSelectionSmokeTest {
                 new SRPWrapper(s2, h, 3, 6.0, false, true), h, data, y);
     }
 
-    // ── 6. Default useHardFilter MUST be true ──────────────────────────────
+    // ── 6. Default useHardFilter MUST be true
 
     private static void testSRPHardFilterDefaultIsTrue() {
         int F = 3, K = 2;
@@ -476,19 +463,29 @@ public class WrapperSelectionSmokeTest {
                 m1.isUseHardFilter() && m2.isUseHardFilter());
     }
 
-    // ── 7. Drift alarm dociera do selektora (S2/S4) ────────────────────────
+    // ── 7. Kto aktualizuje selektor
 
-    private static void testSRPDriftAlarmFlowsToSelector() {
+    private static void testWrappersDoNotDriveSelector() {
         int F = 3;
         InstancesHeader h = makeHeader(F, 2, F);
-        RecordingSelector sel = new RecordingSelector(F, 2, new int[]{0, 1});
-        SRPWrapper m = new SRPWrapper(sel, h, 3, 6.0, false, true);
-        m.train(fullInstance(h, new double[]{1, 2, 3}, 0), 0, true, Set.of(2));
-        report("SRP forwards drift alarm + features to selector",
-                sel.updateCalls == 1 && sel.lastDriftAlarm && sel.lastDriftFeats.contains(2));
+
+        RecordingSelector srpSel = new RecordingSelector(F, 2, new int[]{0, 1});
+        SRPWrapper srp = new SRPWrapper(srpSel, h, 3, 6.0, false, true);
+        srp.train(fullInstance(h, new double[]{1, 2, 3}, 0), 0, true, Set.of(2));
+
+        RecordingSelector arfSel = new RecordingSelector(F, 2, new int[]{0, 1});
+        ARFWrapper arf = new ARFWrapper(arfSel, h, 3, 6.0, false);
+        arf.train(fullInstance(h, new double[]{1, 2, 3}, 0), 0, true, Set.of(2));
+
+        RecordingSelector htSel = new RecordingSelector(F, 2, new int[]{0, 1});
+        HoeffdingTreeWrapper ht = new HoeffdingTreeWrapper(htSel, h);
+        ht.train(fullInstance(h, new double[]{1, 2, 3}, 0), 0, true, Set.of(2));
+
+        report("wrappers do not call selector.update (the runner owns that)",
+                srpSel.updateCalls == 0 && arfSel.updateCalls == 0 && htSel.updateCalls == 0);
     }
 
-    // ── reporting ──────────────────────────────────────────────────────────
+    // ── reporting
 
     private static void report(String name, boolean ok) {
         if (ok) { passed++; System.out.println("  [PASSED] " + name); }

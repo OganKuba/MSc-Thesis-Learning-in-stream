@@ -18,7 +18,7 @@ def _classify_dataset(name: str) -> str:
 
 def _ensure_master(master: pd.DataFrame | None,
                    per_block: dict[str, dict]) -> pd.DataFrame:
-    """Use master_summary.csv if available, otherwise concat per-block summaries."""
+    """Use master_summary.csv if available, otherwise concat per-block."""
     if master is not None and len(master):
         return master.copy()
     parts = []
@@ -75,29 +75,31 @@ def table_best_methods(master: pd.DataFrame, e1_summary: pd.DataFrame | None):
 
 
 def table_resource_vs_kappa(master: pd.DataFrame):
-    if master.empty or "ram_hours_gb_mean" not in master.columns:
+    if (master.empty or "ram_hours_gb_mean" not in master.columns
+            or "instances_mean" not in master.columns):
         return
-    agg = master.groupby("variant").agg(
+    df = master.copy()
+    instances = pd.to_numeric(df["instances_mean"], errors="coerce")
+    df["ramh_per_100k"] = (pd.to_numeric(df["ram_hours_gb_mean"], errors="coerce")
+                            / instances * 1e5 * config.RAMH_SCALE)
+    agg = df.groupby("variant").agg(
         kappa=("kappa_mean", "mean"),
-        ram=("ram_hours_gb_mean", "mean"),
+        ramh_per_100k=("ramh_per_100k", "mean"),
         thr=("throughput_mean", "mean"),
         n=("kappa_mean", "size"),
     ).reset_index().sort_values("kappa", ascending=False)
-    # Model-size RAM-Hours land around 1e-6 GB-h and would print as 0.0000; rescale
-    # so the column carries information (multiplier stated in the caption).
-    agg["ram"] = agg["ram"] * config.RAMH_SCALE
-    # Pre-formatted so the counts and the throughput do not inherit the 4 decimals that
-    # kappa and the (small) RAM-Hours need.
     agg["thr"] = agg["thr"].map(lambda x: "-" if pd.isna(x) else f"{x:.0f}")
     agg["n"] = agg["n"].map(lambda x: f"{int(x)}")
+    agg = agg.rename(columns={"ramh_per_100k": "RAMh/100k"})
     body = latex_tables.df_to_booktabs(agg.set_index("variant"),
                                        ndigits=4, index_name="Variant")
     latex_tables.write_table(
         "tab_cross_resource_vs_kappa", body,
         caption=(
-            r"Cross-experiment: mean $\kappa$, RAM-Hours (in units of " + config.RAMH_UNIT_TEX
-            + r", column \emph{ram}) and throughput (instances/sec) per variant "
-            r"(n = entries in master\_summary)."
+            r"Cross-experiment: mean $\kappa$, RAM-Hours per 100k instances (in units of "
+            + config.RAMH_UNIT_TEX + r", column \emph{RAMh/100k}) and throughput "
+            r"(instances/sec) per variant ($n$ = entries in master\_summary). Unequal $n$ "
+            r"means that rows are not controlled head-to-head comparisons."
         ),
         label="tab:cross_resource_vs_kappa",
     )
@@ -105,18 +107,23 @@ def table_resource_vs_kappa(master: pd.DataFrame):
 
 def plot_pareto(master: pd.DataFrame):
     plot_utils.setup_style()
-    if master.empty or "ram_hours_gb_mean" not in master.columns:
+    if (master.empty or "ram_hours_gb_mean" not in master.columns
+            or "instances_mean" not in master.columns):
         return
-    agg = master.groupby("variant").agg(
+    df = master.copy()
+    instances = pd.to_numeric(df["instances_mean"], errors="coerce")
+    df["ramh_per_100k"] = (pd.to_numeric(df["ram_hours_gb_mean"], errors="coerce")
+                            / instances * 1e5 * config.RAMH_SCALE)
+    agg = df.groupby("variant").agg(
         kappa=("kappa_mean", "mean"),
-        ram=("ram_hours_gb_mean", "mean"),
+        ramh_per_100k=("ramh_per_100k", "mean"),
     ).reset_index()
-    agg = agg[agg.ram > 0]
+    agg = agg[agg.ramh_per_100k > 0]
+    agg = agg[~agg.variant.isin(["NoChange", "Majority"])]
     if len(agg) == 0:
         return
-    agg["ram"] = agg["ram"] * config.RAMH_SCALE  # same units as tab_cross_resource_vs_kappa
     pareto = []
-    sorted_df = agg.sort_values("ram")
+    sorted_df = agg.sort_values("ramh_per_100k")
     best_kappa = -np.inf
     for _, r in sorted_df.iterrows():
         if r.kappa > best_kappa:
@@ -127,16 +134,16 @@ def plot_pareto(master: pd.DataFrame):
     for color, (_, r) in zip(palette, agg.iterrows()):
         marker = "*" if r.variant in pareto else "o"
         size = 200 if r.variant in pareto else 90
-        ax.scatter(r.ram, r.kappa, s=size, marker=marker, color=color,
+        ax.scatter(r.ramh_per_100k, r.kappa, s=size, marker=marker, color=color,
                    edgecolor="black", linewidth=0.6, zorder=3)
-        ax.annotate(r.variant, (r.ram, r.kappa), fontsize=8, alpha=0.9,
+        ax.annotate(r.variant, (r.ramh_per_100k, r.kappa), fontsize=8, alpha=0.9,
                     xytext=(5, 4), textcoords="offset points")
-    front = agg[agg.variant.isin(pareto)].sort_values("ram")
-    ax.plot(front.ram, front.kappa, color="grey", linestyle="--", alpha=0.6, zorder=2)
+    front = agg[agg.variant.isin(pareto)].sort_values("ramh_per_100k")
+    ax.plot(front.ramh_per_100k, front.kappa, color="grey", linestyle="--", alpha=0.6, zorder=2)
     ax.set_xscale("log")
-    ax.set_xlabel(r"RAM-Hours ($10^{-6}$ GB$\cdot$h, log scale)")
+    ax.set_xlabel(r"RAM-Hours per 100k instances ($10^{-6}$ GB$\cdot$h, log scale)")
     ax.set_ylabel(r"Mean $\kappa$")
-    ax.set_title(r"Cross-experiment Pareto: $\kappa$ vs RAM-Hours (★ = Pareto-optimal)")
+    ax.set_title(r"Cross-experiment Pareto: $\kappa$ vs RAMh/100k (★ = Pareto-optimal)")
     fig.tight_layout()
     plot_utils.save_fig(fig, "cross_pareto_front")
 

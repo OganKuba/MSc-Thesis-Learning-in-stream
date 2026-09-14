@@ -11,34 +11,48 @@ zbudować prompt do napisania rozdziału „Wyniki" pracy.
 - Każdy blok ma swój katalog `stream/results/E{1..5}/` z surowymi CSV oraz
   podkatalog `stat_tests/` z gotowymi testami statystycznymi.
 - Metryki agregowane przez runner (sufix `_mean` / `_std` w summary CSV):
-  `accuracy`, `kappa`, `kappa_per`, `temporal_kappa`, `recovery_time`,
+  `accuracy`, `kappa`, `kappa_temporal_final`, `kappa_temporal_windowed`, `recovery_time`,
   `ram_hours_gb`, `throughput`, `peak_mb`, `drift_count`, `drift_alarms`,
   `feature_stability`, `selection_changes`, `mean_selected_feature_count`,
   oraz liczniki akcji DA-SRP / DA-ARF: `da_kept`, `da_surgical`, `da_full`,
   `da_no_replacement`, `ext_keep_count`, `ext_full_count`.
-- Każdy zestaw `stat_tests/` zawiera Friedmana + Nemenyi'ego + Wilcoxona oraz
-  CD diagramy dla 6 metryk: `accuracy`, `kappa`, `kappa_per`,
-  `temporal_kappa`, `recovery_time`, `ram_hours_gb`.
-- Format eksportu: tabele → LaTeX `.tex` (booktabs), wykresy → `.pdf` + `.png`,
-  CD diagramy → `.svg` (kopiowane z `stat_tests/`).
+- Każdy zestaw `stat_tests/` zawiera Friedmana + Nemenyi'ego + Wilcoxona dla 6 metryk
+  (`config.STAT_METRICS`): `accuracy`, `kappa`, `kappa_temporal`, `recovery_time`,
+  `recovery_max_drop`, `ram_hours_gb`.
+- **Do `figures/` eksportowane są CD diagramy tylko dla 2 metryk** (`config.CD_DIAGRAM_METRICS`):
+  `kappa` i `recovery_max_drop` — ta druga jako jedyna metryka recovery osiąga istotność.
+  Podobnie tabele średnich rang powstają tylko dla `kappa` (`config.RANK_TABLE_METRICS`).
+  Pozostałe metryki zostają w CSV-kach `stat_tests/`, ale nie mają własnych artefaktów.
+- Format eksportu: tabele → LaTeX `.tex` (booktabs), wykresy → **`.pdf`** (`config.FIGURE_FORMATS`;
+  `.png` trzeba dopisać ręcznie, np. do slajdów), CD diagramy → `.svg` (rysowane z `stat_tests/`).
 
 Skróty wariantów występujące w plikach:
 - **S1** – statyczna selekcja cech (baseline),
-- **S2** – adaptacyjna selekcja sterowana detektorem driftu,
-- **S3** – adaptacyjna selekcja okresowa,
-- **S4** – adaptacyjna selekcja sterowana ważnościami cech,
+- **S2** – `AlarmTriggeredSelector`: przebudowa **tylko po alarmie** dryfu,
+- **S3** – `PeriodicSelector`: przebudowa **okresowa**, co `periodicInterval` instancji,
+- **S4** – `DriftAwareSelector`: okresowo **i** po alarmie, z preferencją do wymiany cech
+  wskazanych jako dryfujące,
 - **DA-ARF-A / -AB / -ABC**, **DA-SRP-A / -AB / -ABC** – progresywne
   warianty drift-aware ARF / SRP (A = wykrycie, AB = + chirurgiczna wymiana,
   ABC = + pełna wymiana / waga uczących),
 - **Majority / NoChange** – klasyfikatory referencyjne (Level-1 validation).
 
+> **Uwaga do kolumn selekcji.** `feature_selections.csv` zapisuje zbiór cech, którego używa
+> **model**, nie selektor. Dla HT/ARF/SRP to jedno i to samo. Dla wariantów `DA-*` model ignoruje
+> selektor i losuje własne podprzestrzenie per learner — kolumna pokazuje wtedy **sumę
+> podprzestrzeni zespołu**, a zmiany mają `trigger_type = subspace_change` (selektor nic o nich
+> nie wie). Wcześniej zapisywany był wybór selektora, przez co każdy przebieg DA wyglądał jak
+> zamrożone S1 (`feature_stability_mean = 1.000`, `selection_changes_mean = 0`); to zostało
+> naprawione. Szczegół per learner nadal jest w `adaptation_events.csv` (`per_learner_subspace`).
+
 ---
 
 ## E1 – Baselines (HT / ARF / SRP + Majority / NoChange) na 8 zbiorach
 
-Datasety: `SEA`, `STAGGER`, `Hyperplane`, `RandomRBF`, `FeatureDrift`,
-`YahooFinance`, `NYCTaxi`, `NHTS`.
-Warianty: `HT+S1`, `ARF+S1`, `SRP+S1`, `Majority`, `NoChange`.
+Datasety (8): `SEA`, `Hyperplane`, `RandomRBF`, `FeatureDrift`, `LED`,
+`YahooFinance`, `NYCTaxi`, `NHTS`. (STAGGER usunięty — κ = 1.000 dla wszystkich; w zamian LED.)
+Warianty (8): `Majority`, `NoChange`, `HT`, `ARF`, `SRP` (bez selekcji, `selector = NONE`)
+oraz `HT+S1`, `ARF+S1`, `SRP+S1` (statyczna selekcja `K = ⌈√d⌉`).
 
 ### Tabele (`stream/results/tables/`)
 
@@ -50,7 +64,7 @@ Warianty: `HT+S1`, `ARF+S1`, `SRP+S1`, `Majority`, `NoChange`.
 | `tab_e1_resources.tex` | RAM-Hours (w jednostkach 10⁻⁶ GB·h — patrz `config.RAMH_SCALE`) i throughput (instances/sec) dla baseline'ów `HT+S1`/`ARF+S1`/`SRP+S1` per dataset. |
 | `tab_e1_recovery.tex` | Średnia długość recovery (liczba okien) per (dataset × wariant). |
 | `tab_e1_friedman.tex` | Wynik testu Friedmana (χ², p-value, liczba algorytmów/datasetów, istotność) dla 6 metryk. |
-| `tab_e1_avg_ranks_{accuracy,kappa,kappa_per,temporal_kappa,recovery_time,ram_hours_gb}.tex` | Średnie rangi metod dla danej metryki, posortowane rosnąco. |
+| `tab_e1_avg_ranks_kappa.tex` | Średnie rangi metod po κ, posortowane rosnąco. Tabele rang dla pozostałych metryk **nie są już generowane** (`config.RANK_TABLE_METRICS`) — były duplikatem `friedman` + `nemenyi`. |
 | `tab_e1_nemenyi_kappa.tex` | Tabela Nemenyi'ego po kappie (rank_diff, critical_difference, significant). |
 | `tab_e1_wilcoxon_kappa.tex` | Pary Wilcoxona po kappie (n, statystyka, p, p_adjusted (Holm), istotność, effect size). |
 
@@ -62,20 +76,20 @@ Warianty: `HT+S1`, `ARF+S1`, `SRP+S1`, `Majority`, `NoChange`.
 | `e1_accuracy_by_dataset.pdf` | grouped bar | mean accuracy na dataset z grupowaniem po wariancie. |
 | `e1_temporal_kappa.pdf` | grouped bar | mean temporal κ na dataset z grupowaniem po wariancie. |
 | `e1_drift_alarm_counts.pdf` | grouped bar | średnia liczba alarmów driftu per (dataset, wariant). |
-| `e1_recovery_length.pdf` | grouped bar | średnia długość recovery per (dataset, wariant). |
+| `e1_recovery_depth.pdf` | grouped bar | średnia długość recovery per (dataset, wariant). |
 | `e1_feature_selection_overview.pdf` | 2 panele bar | (a) mean liczba wybranych cech, (b) mean stability ratio – per (dataset, wariant). |
 | `e1_feature_importance_heatmap.pdf` | heatmap | ważność cech per (dataset, indeks cechy), w jednostkach udziału równomiernego (wartość × d, więc 1.0 = udział 1/d); czarna ramka = wstrzyknięte cechy szumowe; puste komórki = zbiór nie ma takiej cechy. Oś wariantów celowo usunięta — estymator ważności nie zależy od modelu. |
-| `e1_timeseries/e1_kappa_timeseries_<DS>.pdf` (8 datasetów) | line plot | κ (po oknach) w funkcji `end_instance` per wariant; pionowe linie = ground-truth drifty. |
-| `e1_timeseries/e1_accuracy_timeseries_<DS>.pdf` (8 datasetów) | line plot | accuracy po oknach w funkcji `end_instance` per wariant. |
-| `e1_alarms/e1_alarms_<DS>.pdf` (8 datasetów) | timeline | sub-plot na wariant: czerwone linie = alarmy detektora, czarne kreskowane = GT drift. |
-| `e1_stat_tests/e1_cd_{accuracy,kappa,kappa_per,temporal_kappa,recovery_time,ram_hours_gb}.svg` | CD diagram | krytyczna różnica + grupy metod nieróżniących się istotnie, na metryce. |
+| `e1_timeseries/e1_kappa_timeseries_<DS>.pdf` (4: SEA, Hyperplane, NHTS, YahooFinance) | line plot | κ (po oknach) w funkcji `end_instance` per wariant; pionowe linie = ground-truth drifty. |
+
+| `e1_stat_tests/e1_cd_{kappa,recovery_max_drop}.svg` (2 metryki) | CD diagram | krytyczna różnica + grupy metod nieróżniących się istotnie. **Uwaga: CD dla E1 = 3.71 przy skali rang 1–8** — rozstrzyga tylko skrajne różnice. |
 
 ---
 
 ## E2 – Adaptacyjna selekcja cech (S1 vs S2/S3/S4)
 
-Datasety: `SEA`, `STAGGER`, `Hyperplane`, `RandomRBF`, `FeatureDrift`.
-Warianty (ARF i SRP): `+S1`, `+S2`, `+S3`, `+S4`.
+Datasety (5, wyłącznie syntetyczne — potrzebny ground truth istotności cech):
+`SEA`, `Hyperplane`, `RandomRBF`, `FeatureDrift`, `LED`.
+Warianty (10): `ARF` i `SRP` **bez selekcji** oraz ich wersje `+S1`, `+S2`, `+S3`, `+S4`.
 
 ### Tabele
 
@@ -85,9 +99,10 @@ Warianty (ARF i SRP): `+S1`, `+S2`, `+S3`, `+S4`.
 | `tab_e2_accuracy.tex` | Macierz **mean accuracy** (wariant × dataset). |
 | `tab_e2_temporal_kappa.tex` | Macierz **mean temporal κ** (wariant × dataset). |
 | `tab_e2_delta_vs_raw.tex` | Δκ wariantu względem **modelu bez selekcji tej samej rodziny**: `ARF+S*` wobec surowego ARF, `SRP+S*` wobec surowego SRP, per dataset. Wiersze referencyjne pominięte (byłyby zerami). Δ wobec S1 = różnica wiersza i wiersza S1 tego samego modelu. |
+| `tab_e2_resources.tex` | Per wariant: mean κ, **RAMh/100k** (RAM-Hours w 10⁻⁶ GB·h znormalizowane do strumienia 100k instancji — surowa metryka całkuje pamięć po czasie, więc bez normalizacji odzwierciedlałaby głównie długość strumienia), mean `peak_mb` (głęboki rozmiar modelu, normalizacji nie wymaga) i mean throughput. |
 | `tab_e2_stability.tex` | `feature_stability_mean` (Jaccard kolejnych selekcji) per (wariant × dataset). |
 | `tab_e2_drift_response.tex` | Per wariant: średnia liczba alarmów, liczba zmian selekcji, średnia wielkość selekcji, stability. |
-| `tab_e2_friedman.tex`, `tab_e2_avg_ranks_*.tex` (6 metryk), `tab_e2_nemenyi_kappa.tex`, `tab_e2_wilcoxon_kappa.tex` | Pakiet testów statystycznych jak w E1. |
+| `tab_e2_friedman.tex`, `tab_e2_avg_ranks_kappa.tex`, `tab_e2_nemenyi_kappa.tex`, `tab_e2_wilcoxon_kappa.tex` | Pakiet testów statystycznych jak w E1. |
 
 ### Rysunki
 
@@ -97,31 +112,33 @@ Warianty (ARF i SRP): `+S1`, `+S2`, `+S3`, `+S4`.
 | `e2_adaptive_vs_static.pdf` | scatter z łączącymi liniami | per dataset: najlepsze S1 vs najlepsze S2/S3/S4 (κ). |
 | `e2_feature_selection_overview.pdf` | 2 panele bar | (a) mean liczba wybranych cech, (b) mean stability ratio. |
 | `e2_feature_importance_heatmap.pdf` | heatmap | jak `e1_feature_importance_heatmap`: dataset × indeks cechy, jednostki udziału równomiernego, ramka na cechach szumowych. |
-| `e2_timelines/e2_selection_timeline_<DS>.pdf` (5 datasetów) | scatter po czasie | dla 1 ziarna i 4 wariantów adaptacyjnych: indeksy aktualnie wybranych cech w funkcji instancji. |
+| `e2_timelines/e2_selection_timeline_<DS>.pdf` (2: FeatureDrift, Hyperplane) | scatter po czasie | dla 1 ziarna i 4 wariantów adaptacyjnych: indeksy aktualnie wybranych cech w funkcji instancji. |
 | `e2_drift_alarm_counts.pdf` | grouped bar | mean liczba alarmów per (dataset, wariant). |
-| `e2_alarms/e2_alarms_<DS>.pdf` (5 datasetów) | timeline | sub-plot na wariant: alarmy detektora vs GT drift. |
-| `e2_timeseries/e2_kappa_timeseries_<DS>.pdf` (5 datasetów) | line plot | κ po oknach per wariant (top-6 w danym datasecie). |
-| `e2_recovery_length.pdf` | grouped bar | średnia długość recovery per (dataset, wariant). |
-| `e2_stat_tests/e2_cd_<metric>.svg` (6 metryk) | CD diagram | jak w E1. |
+
+| `e2_timeseries/e2_kappa_timeseries_<DS>.pdf` (2: FeatureDrift, Hyperplane) | line plot | κ po oknach per wariant (top-6 w danym datasecie). |
+| `e2_recovery_depth.pdf` | grouped bar | średnia długość recovery per (dataset, wariant). |
+| `e2_stat_tests/e2_cd_{kappa,recovery_max_drop}.svg` (2 metryki) | CD diagram | jak w E1. |
 
 ---
 
 ## E3 – Ablation DA-SRP / DA-ARF
 
-Datasety: `SEA`, `STAGGER`, `Hyperplane`, `RandomRBF`, `FeatureDrift`,
-`YahooFinance`, `NYCTaxi`, `NHTS` (8).
-Warianty: `SRP+S1_baseline`, `ARF+S2_baseline`, `DA-ARF-A/-AB/-ABC`,
-`DA-SRP-A/-AB/-ABC`.
+Datasety (8): `SEA`, `Hyperplane`, `RandomRBF`, `FeatureDrift`, `LED`,
+`YahooFinance`, `NYCTaxi`, `NHTS` (5 syntetycznych + 3 realne ARFF).
+Warianty (10): baseline'y `SRP`, `SRP+S1`, `ARF`, `ARF+S2` oraz `DA-ARF-{A,AB,ABC}`
+i `DA-SRP-{A,AB,ABC}`.
 
 ### Tabele
 
 | Plik | Co zawiera |
 |---|---|
-| `tab_e3_ablation.tex` | Macierz **mean κ** (dataset × wariant) z **bold = best** per row. Pod tabelą **mean Δκ** każdego wariantu względem `SRP+S1_baseline`. |
+| `tab_e3_ablation.tex` | Macierz **mean κ** (dataset × wariant) z **bold = best** per row (tu poprawnie: wiersze = datasety, więc bold wskazuje najlepszy wariant na zbiorze). |
+| `tab_e3_ablation_deltas.tex` | Δκ każdego wariantu wobec dwóch baseline'ów (surowy model i baseline z selekcją), zagregowane po 8 zbiorach: `mean`, `median`, `std`, `wins` (na ilu zbiorach Δ > 0), `worst` (największa strata na pojedynczym zbiorze). Wiodące są `median` i `wins` — średnia jest wrażliwa na pojedynczy zbiór. |
 | `tab_e3_accuracy.tex` | Macierz **mean accuracy** (dataset × wariant). |
 | `tab_e3_temporal_kappa.tex` | Macierz **mean temporal κ** (dataset × wariant). |
+| `tab_e3_resources.tex` | Per wariant: mean κ, **RAMh/100k** (RAM-Hours w 10⁻⁶ GB·h znormalizowane do strumienia 100k instancji — surowa metryka całkuje pamięć po czasie, więc bez normalizacji odzwierciedlałaby głównie długość strumienia), mean `peak_mb` (głęboki rozmiar modelu, normalizacji nie wymaga) i mean throughput. |
 | `tab_e3_adaptation_actions.tex` | Sumy zdarzeń DA per (dataset × wariant): KEEP / SURGICAL / FULL / NO\_REPL / EXT\_KEEP / EXT\_FULL. |
-| `tab_e3_friedman.tex`, `tab_e3_avg_ranks_*.tex` (6 metryk) | Friedman + średnie rangi. |
+| `tab_e3_friedman.tex`, `tab_e3_avg_ranks_kappa.tex` | Friedman + średnie rangi. |
 | `tab_e3_nemenyi_{kappa,temporal_kappa,recovery_time}.tex`, `tab_e3_wilcoxon_{kappa,temporal_kappa,recovery_time}.tex` | Testy post-hoc dla 3 kluczowych metryk. |
 
 ### Rysunki
@@ -133,19 +150,24 @@ Warianty: `SRP+S1_baseline`, `ARF+S2_baseline`, `DA-ARF-A/-AB/-ABC`,
 | `e3_adaptation_actions.pdf` | stacked bar (panel per wariant) | proporcje akcji KEEP/SURGICAL/FULL/NO\_REPL/EXT\_KEEP/EXT\_FULL na dataset. |
 | `e3_adaptation_event_counts.pdf` | grouped bar | całkowita liczba zdarzeń adaptacji per (dataset, wariant), wszystkie ziarna. |
 | `e3_extra/e3_importance_evolution_<DS>.pdf` (3 datasety: FeatureDrift, NHTS, Hyperplane) | line plot | dla najbogatszego DA-wariantu i ziarna 1: ważność top-5 cech w funkcji instancji + pionowe linie driftu. |
-| `e3_timeseries/e3_kappa_timeseries_<DS>.pdf` (8 datasetów) | line plot | κ po oknach per wariant. |
+| `e3_timeseries/e3_kappa_timeseries_<DS>.pdf` (4: FeatureDrift, Hyperplane, NYCTaxi, YahooFinance) | line plot | κ po oknach per wariant. |
 | `e3_action_vs_overlap.pdf` | stacked bar (panel per wariant) | rozkład akcji learnera (KEEP/SURGICAL/FULL) wobec liczby dryfujących cech w jego podprzestrzeni. **Wymaga kolumn `per_learner_*` — patrz niżej.** |
 | `e3_timelines/e3_learner_lanes_<DS>.pdf` | raster 2-panelowy | pas na learnera: lewy panel = akcja, prawy = liczba dryfujących cech w podprzestrzeni tego learnera (kolorowany overlap). **Wymaga kolumn `per_learner_*`.** |
-| `e3_recovery_length.pdf` | grouped bar | mean recovery length per (dataset, wariant). |
+| `e3_recovery_depth.pdf` | grouped bar | mean recovery length per (dataset, wariant). |
 | `e3_drift_alarm_counts.pdf` | grouped bar | mean liczba alarmów per (dataset, wariant). |
-| `e3_stat_tests/e3_cd_<metric>.svg` (6 metryk) | CD diagram | jak w E1. |
+| `e3_stat_tests/e3_cd_{kappa,recovery_max_drop}.svg` (2 metryki) | CD diagram | jak w E1. |
 
 ---
 
-## E4 – High-dynamics (Low vs HiDyn) na SEA i STAGGER
+## E4 – Intensywność dryftu (Low vs HiDyn) w trzech rodzinach strumieni
 
-Datasety: `SEA-Low`, `SEA-HiDyn`, `STAGGER-Low`, `STAGGER-HiDyn`.
-Warianty: `ARF+S1`, `SRP+S1`, `DA-ARF-ABC`, `DA-SRP-ABC`.
+Datasety (6, w parach): `SEA-Low`/`SEA-HiDyn` (3 → 10 nagłych zmian),
+`FeatureDrift-Low`/`FeatureDrift-HiDyn` (2 → 10 dryfujących cech),
+`RandomRBF-Low`/`RandomRBF-HiDyn` (prędkość centroidów 0.001 → 0.010).
+W każdej parze przestrzeń cech jest identyczna — zmienia się wyłącznie parametr intensywności.
+Warianty (4): `ARF`, `SRP`, `DA-ARF-ABC`, `DA-SRP-ABC` — bez `+S1`, dzięki czemu Nemenyi ma
+tu CD = 1.91 (jedyny blok, w którym ten test rozstrzyga).
+STAGGER wypadł z E4 jako nasycony; został tylko w E5.
 
 ### Tabele
 
@@ -155,8 +177,9 @@ Warianty: `ARF+S1`, `SRP+S1`, `DA-ARF-ABC`, `DA-SRP-ABC`.
 | `tab_e4_accuracy.tex` | Macierz **mean accuracy** (dataset × wariant). |
 | `tab_e4_temporal_kappa.tex` | Macierz **mean temporal κ** (dataset × wariant). |
 | `tab_e4_dynamics_sensitivity.tex` | mean κ per wariant w podziale na `Low` vs `HiDyn` (uśrednione po generatorze). |
+| `tab_e4_resources.tex` | Per wariant: mean κ, **RAMh/100k** (RAM-Hours w 10⁻⁶ GB·h znormalizowane do strumienia 100k instancji — surowa metryka całkuje pamięć po czasie, więc bez normalizacji odzwierciedlałaby głównie długość strumienia), mean `peak_mb` (głęboki rozmiar modelu, normalizacji nie wymaga) i mean throughput. |
 | `tab_e4_adaptation_actions.tex` | Sumy zdarzeń DA per (dataset × wariant). |
-| `tab_e4_friedman.tex`, `tab_e4_avg_ranks_*.tex` (6 metryk) | Friedman + średnie rangi. |
+| `tab_e4_friedman.tex`, `tab_e4_avg_ranks_kappa.tex` | Friedman + średnie rangi. |
 | `tab_e4_nemenyi_{kappa,temporal_kappa,recovery_time}.tex`, `tab_e4_wilcoxon_{kappa,temporal_kappa,recovery_time}.tex` | Post-hoc. |
 
 ### Rysunki
@@ -164,19 +187,21 @@ Warianty: `ARF+S1`, `SRP+S1`, `DA-ARF-ABC`, `DA-SRP-ABC`.
 | Plik | Typ | Co przedstawia |
 |---|---|---|
 | `e4_kappa_by_dynamics.pdf` | panele bar (panel per generator) | mean κ na osi `Low`/`HiDyn`, grupowanie po wariancie. |
-| `e4_timeseries/e4_kappa_timeseries_<DS>.pdf` (4 datasety) | line plot | κ po oknach per wariant z pionowymi liniami driftu. |
-| `e4_timeseries/e4_accuracy_timeseries_<DS>.pdf` (4 datasety) | line plot | accuracy po oknach per wariant. |
+| `e4_timeseries/e4_kappa_timeseries_<DS>.pdf` (4: SEA-Low/HiDyn, FeatureDrift-Low/HiDyn) | line plot | κ po oknach per wariant z pionowymi liniami driftu. |
+
 | `e4_drift_alarm_counts.pdf` | grouped bar | mean liczba alarmów per (dataset, wariant). |
-| `e4_alarms/e4_alarms_<DS>.pdf` (4 datasety) | timeline | sub-plot na wariant: alarmy vs GT drift. |
-| `e4_recovery_length.pdf` | grouped bar | mean recovery length per (dataset, wariant). |
+
+| `e4_recovery_depth.pdf` | grouped bar (panel per metryka) | `mean_max_drop` i `mean_area` per (dataset, wariant). Zastąpiło `recovery_length`, które było zdegenerowane (≈1 okno wszędzie). |
 | `e4_adaptation_actions.pdf` | stacked bar (panel per wariant) | proporcje akcji DA na dataset. |
-| `e4_stat_tests/e4_cd_<metric>.svg` (6 metryk) | CD diagram | jak w E1. |
+| `e4_stat_tests/e4_cd_{kappa,recovery_max_drop}.svg` (2 metryki) | CD diagram | jak w E1. |
 
 ---
 
 ## E5 – Porównanie detektorów driftu (w ramach DA-ARF)
 
-Datasety: `SEA-HiDyn`, `STAGGER-HiDyn`, `Hyperplane`, `RandomRBF`.
+Datasety (4): `SEA-HiDyn`, `STAGGER-HiDyn`, `Hyperplane`, `RandomRBF`.
+Warianty (8): `DA-ARF` × {ADWIN, HDDM\_A, HDDM\_W, KSWIN} + baseline'y
+`ARF+ADWIN`, `SRP+ADWIN`, `ARF+S1+ADWIN`, `SRP+S1+ADWIN`.
 Warianty: `ARF+ADWIN`, `SRP+ADWIN`,
 `DA-ARF+ADWIN`, `DA-ARF+HDDM_A`, `DA-ARF+HDDM_W`, `DA-ARF+KSWIN`.
 
@@ -188,8 +213,9 @@ Warianty: `ARF+ADWIN`, `SRP+ADWIN`,
 | `tab_e5_accuracy.tex` | Macierz **mean accuracy** (wariant × dataset). |
 | `tab_e5_temporal_kappa.tex` | Macierz **mean temporal κ** (wariant × dataset). |
 | `tab_e5_detector_ranking.tex` | Ranking 4 detektorów (DA-ARF): mean κ, accuracy, temporal κ, recovery, mean liczba alarmów. |
+| `tab_e5_resources.tex` | Per wariant: mean κ, **RAMh/100k** (RAM-Hours w 10⁻⁶ GB·h znormalizowane do strumienia 100k instancji — surowa metryka całkuje pamięć po czasie, więc bez normalizacji odzwierciedlałaby głównie długość strumienia), mean `peak_mb` (głęboki rozmiar modelu, normalizacji nie wymaga) i mean throughput. |
 | `tab_e5_alarm_effectiveness.tex` | Per (wariant, detektor): liczba alarmów, mean/median Δaccuracy w oknie po alarmie, % alarmów użytecznych (≥ 1 pp) i szkodliwych (≤ −1 pp). |
-| `tab_e5_friedman.tex`, `tab_e5_avg_ranks_*.tex` (6 metryk) | Friedman + średnie rangi. |
+| `tab_e5_friedman.tex`, `tab_e5_avg_ranks_kappa.tex` | Friedman + średnie rangi. |
 | `tab_e5_nemenyi_{kappa,temporal_kappa,recovery_time}.tex`, `tab_e5_wilcoxon_{kappa,temporal_kappa,recovery_time}.tex` | Post-hoc. |
 
 ### Rysunki
@@ -204,9 +230,9 @@ Warianty: `ARF+ADWIN`, `SRP+ADWIN`,
 | `e5_alarm_effectiveness.pdf` | boxplot + strip | rozkład Δaccuracy na alarm per wariant; etykieta = % alarmów dających ≥ 1 pp. |
 | `e5_timelines/e5_alarm_effect_timeline_<DS>.pdf` (Hyperplane, SEA-HiDyn) | timeline | sub-plot na wariant: każdy alarm jako słupek o wysokości = odzyskana accuracy; kropka = moment alarmu, linia przerywana = GT drift. |
 | `e5_timelines/e5_adaptation_timeline_<DS>.pdf` (Hyperplane, SEA-HiDyn) | raster | akcje adaptacji w osi instancji, pas na typ akcji. |
-| `e5_recovery_length.pdf` | grouped bar | mean recovery length per (dataset, wariant). |
+| `e5_recovery_depth.pdf` | grouped bar | mean recovery length per (dataset, wariant). |
 | `e5_adaptation_actions.pdf` | stacked bar (panel per wariant) | proporcje akcji DA na dataset. |
-| `e5_stat_tests/e5_cd_<metric>.svg` (6 metryk) | CD diagram | jak w E1. |
+| `e5_stat_tests/e5_cd_{kappa,recovery_max_drop}.svg` (2 metryki) | CD diagram | jak w E1. |
 
 ---
 
@@ -238,7 +264,7 @@ summary z bloków E1–E5).
 |---|---|
 | `stream/results/master_summary.csv` | wszystkie wiersze summary z E1–E5 razem (klucz: block, dataset, variant…). |
 | `stream/results/runs_raw.csv` | każde uruchomienie (per seed) – nieuśrednione, ze statusem `OK/FAIL`. |
-| `stream/results/E{1..5}/windows.csv` | metryki per okno (`window_id`, `start_instance`, `end_instance`, accuracy/kappa/kappa_per/temporal_kappa, RAM, throughput, drift_count_in_window). |
+| `stream/results/E{1..5}/windows.csv` | metryki per okno (`window_id`, `start_instance`, `end_instance`, `accuracy`, `kappa`, `kappa_temporal`, `ram_hours_gb`, `peak_mb`, `throughput`, `predict_latency_us`, `drift_count_in_window`, `total_drift_count`). |
 | `stream/results/E{1..5}/drift_alarms.csv` | każde wzbudzenie detektora: `instance_index`, `global_alarm`, `drifting_features`, `num_drifting_features`, `error_at_alarm`, accuracy okna przed/po. |
 | `stream/results/E{1..5}/recovery_time.csv` | per drift: `drift_instance`, `recovered_instance`, `recovery_length`, baseline accuracy przed driftem, threshold, `max_drop`, `area_under_recovery_curve`. |
 | `stream/results/E{1..5}/feature_selections.csv` | każda zmiana selekcji: `trigger_type` (`initial`/`periodic`/`drift`), lista wybranych cech, count, zmienione cechy, Jaccard do poprzedniej selekcji, stability_ratio. |
@@ -252,8 +278,8 @@ summary z bloków E1–E5).
   pchać się dalej?).
 - **E2 / RQ2** – czy adaptacyjna selekcja cech (S2/S3/S4) bije statyczną (S1)?
 - **E3 / RQ3** – ablacja drift-aware (komponenty A/AB/ABC) dla SRP i ARF.
-- **E4 / RQ4** – jak wariant pełny (`DA-*-ABC`) reaguje na high-dynamics
-  vs low-dynamics?
+- **E4 / RQ4** – czy przewaga wariantu pełnego (`DA-*-ABC`) utrzymuje się, gdy
+  rośnie intensywność dryftu (pary Low/HiDyn w trzech rodzinach strumieni)?
 - **E5 / RQ5** – który detektor (ADWIN / HDDM\_A / HDDM\_W / KSWIN) najlepiej
   współpracuje z DA-ARF?
 - **Cross** – Pareto κ-RAM, generalizacja synthetic ↔ real, podsumowanie RQ.

@@ -15,12 +15,24 @@ Generated 2026-04-26 from `src/main/java/`.
 
 ## F) Configuration files
 
-- `src/main/java/thesis/experiments/E1_baselines.json` — only JSON config in the source tree (lives next to `E1Baselines.java`, not in `resources/`).
+- `src/main/java/thesis/experiments/master_experiments.json` — the only JSON config in the
+  source tree (lives next to `UnifiedStreamExperimentRunner.java`, not in `resources/`). It
+  defines all five blocks `E1`…`E5` in one file: global settings (`warmup`, `window_size`,
+  `ram_sample_every`, `num_threads`, `seeds`, `default_max_instances`) plus, per block, the
+  variant list and the dataset list. This replaced the five per-block configs
+  (`E1_baselines.json`, `e3_da_srp.json`, …), none of which exist any more.
 - No `src/main/resources/`, no YAML, no `.properties`.
 
 ## D) Tests
 
-- **No `src/test/`.** Tests are co-located runnable classes (`*SmokeTest.java`) inside each package, each with its own `main()` and counters `passed`/`failed`. Listed under each package below.
+- **No `src/test/`.** Tests are co-located runnable classes (`*SmokeTest.java`) inside each
+  package, each with its own `main()` and counters `passed`/`failed`. Listed under each package
+  below.
+- **Run them all with `bash stream/run_smoke_tests.sh`** — it compiles the project and executes
+  every `*SmokeTest` main, printing a combined total and exiting non-zero on any failure.
+  Current state: **19 classes, 276 assertions, all passing.** Three of them
+  (`SyntheticStreamSmokeTest`, `EvaluationSmokeTest`, `SelectorStrategiesSmokeTest`) print
+  diagnostics rather than a `RESULT:` line and so contribute 0 to the count.
 
 ---
 
@@ -47,9 +59,7 @@ DriftDetector  (interface)
 
 FilterRanker  (interface)
 └── AbstractFrequencyRanker (abstract)
-    ├── InformationGainRanker
-    ├── MutualInformationRanker
-    └── ChiSquaredRanker
+    └── InformationGainRanker
 
 FeatureSelector  (interface)
 ├── StaticFeatureSelector
@@ -63,10 +73,8 @@ ModelWrapper  (interface)
 ├── HoeffdingTreeWrapper             [wraps moa HoeffdingTree]
 ├── ARFWrapper                       [wraps moa AdaptiveRandomForest]
 ├── SRPWrapper                       [wraps moa StreamingRandomPatches]
-└── DriftAwareSRP                    [composes SRPWrapper + FeatureImportance]
-
-StreamMetrics
-└── RecordingMetrics                 [adds CSV row writing + κ + κ_per + drift/recovery]
+├── NativeDriftAwareSRP              [own ensemble of ARFHoeffdingTree, explicit subspaces]
+└── DAARFWrapper                     [own ensemble, per-tree ADWIN + background learners]
 
 moa.options.AbstractOptionHandler  +  moa.streams.InstanceStream
 └── SyntheticStreamFactory.NoiseAugmentedStream  (private inner)
@@ -78,11 +86,10 @@ moa.options.AbstractOptionHandler  +  moa.streams.InstanceStream
 
 | Class | Purpose |
 |---|---|
-| `thesis.experiments.E1Baselines` | Production runner — loads `E1_baselines.json`, sweeps datasets × detectors × variants × seeds, writes `summary.csv` + `validation_level1.txt`. |
-| `thesis.pipeline.ExperimentRunner` | Generic JSON-driven runner (writes per-run CSV). **Stub-bound** — depends on `DatasetFactory/ModelFactory/SelectorFactory/DetectorFactory` in `Shims.java` which all `throw UnsupportedOperationException`. |
+| `thesis.experiments.UnifiedStreamExperimentRunner` | **The production runner.** Loads `master_experiments.json`, expands `blocks × datasets × variants × seeds` into a flat WorkItem list, runs it on a fixed thread pool, and writes per-block CSVs + `master_summary.csv` + `runs_raw.csv` + per-block `stat_tests/`. Replaces the five per-block runners (`E1Baselines`, `E2AdaptiveFS`, `E3DASRP`, `E4DriftAnalysis`, `E5Detectors`) that this document used to list; none of them exist any more, and neither do the per-block JSON configs. |
+| `thesis.models.DAARFDiversityProbe` | Diagnostic — measures ensemble diversity inside DA-ARF. |
 | `thesis.pipeline.ArffSanityCheck` | Diagnostic — prints attributes + class distribution for the three real ARFFs. |
 | `thesis.pipeline.SyntheticStreamSmokeTest` | Prints per-stream summary stats for the 5 synthetic generators. |
-| `thesis.pipeline.PipelineSmokeTest` | Asserts pipeline + RecordingMetrics behaviour. |
 | `thesis.detection.DetectionSmokeTest` | ADWIN / KSWINSingle / PerFeatureKSWIN unit-style tests. |
 | `thesis.selection.SelectionSmokeTest` | Rankers + StaticFeatureSelector. |
 | `thesis.selection.PeriodicSelectorSmokeTest` | PeriodicSelector. |
@@ -90,10 +97,14 @@ moa.options.AbstractOptionHandler  +  moa.streams.InstanceStream
 | `thesis.selection.DriftAwareSelectorSmokeTest` | DriftAwareSelector. |
 | `thesis.selection.SelectorStrategiesSmokeTest` | Side-by-side comparison of the four selectors. |
 | `thesis.discretization.DiscretizationSmokeTest` | PiD layers. |
-| `thesis.models.ModelsSmokeTest` | FeatureSpace, FilteredHeaderBuilder, HT/ARF/SRP wrappers. |
-| `thesis.models.DriftAwareSRPSmokeTest` | DriftAwareSRP + FeatureImportance + WeightedSubspaceSampler. |
+| `thesis.models.WrapperSelectionSmokeTest` | FeatureSpace, FilteredHeaderBuilder, HT/ARF/SRP wrappers and how they follow selection changes. |
+| `thesis.models.DAARFRepairSmokeTest` | DA-ARF subspace repair / background-learner promotion. |
+| `thesis.models.ImportanceSamplerSmokeTest` | FeatureImportance + WeightedSubspaceSampler. |
 | `thesis.evaluation.EvaluationSmokeTest` | Per-instance metrics (κ, κ_per, recovery, RAM-h, stability). |
-| `thesis.evaluation.StatsSmokeTest` | Friedman / Nemenyi / Wilcoxon. |
+| `thesis.evaluation.StatisticalTestsSmokeTest` | Friedman / Nemenyi / Wilcoxon. |
+| `thesis.evaluation.MetricsSmokeTest` | MetricsCollector wiring, RAM-Hours model-size sampling, window vs cumulative accuracy. |
+| `thesis.experiments.RecoveryMetricSmokeTest` | Two-phase recovery-time metric and its four outcome categories. |
+| `thesis.detection.TwoLevelDriftSmokeTest` | Level-1 global + Level-2 per-feature detection with BH-FDR. |
 
 ---
 
@@ -197,11 +208,10 @@ moa.options.AbstractOptionHandler  +  moa.streams.InstanceStream
 ### `InformationGainRanker extends AbstractFrequencyRanker`
 - IG = H(Y) − H(Y|X) in base 2. State: complete.
 
-### `MutualInformationRanker extends AbstractFrequencyRanker`
-- MI in nats from joint/marginal frequencies. State: complete.
-
-### `ChiSquaredRanker extends AbstractFrequencyRanker`
-- Pearson χ² over the contingency table. State: complete.
+> `MutualInformationRanker` and `ChiSquaredRanker` used to sit here as sibling implementations.
+> Both were deleted: no variant in `master_experiments.json` ever selected them, so they were
+> dead code that still had to be kept compiling and tested. `InformationGainRanker` is now the
+> only implementation, and the ranker is fixed for every selector (S1-S4) and every DA-* variant.
 
 ### `StaticFeatureSelector implements FeatureSelector`
 - File: `src/main/java/thesis/selection/StaticFeatureSelector.java`
@@ -300,26 +310,33 @@ moa.options.AbstractOptionHandler  +  moa.streams.InstanceStream
 
 ### `DriftActionSummary` (final)
 - File: `src/main/java/thesis/models/DriftActionSummary.java`
-- Records per-learner outcome of `DriftAwareSRP.handleDrift`: `Action { KEEP, SURGICAL, FULL, NO_REPLACEMENT }` + overlap counts + subspace sizes + aggregates.
+- Records per-learner outcome of `NativeDriftAwareSRP.handleDrift` / `DAARFWrapper`: `Action { KEEP, SURGICAL, FULL, NO_REPLACEMENT }` + overlap counts + subspace sizes + aggregates.
 - State: complete.
 
-### `DriftAwareSRP implements ModelWrapper`
-- File: `src/main/java/thesis/models/DriftAwareSRP.java`
-- Composes a `SRPWrapper`. On drift, for each learner:
-  - compute overlap of its subspace with the drifting features (in reduced index space),
-  - if overlap = 0 → **KEEP**,
-  - else if overlap-fraction < `tau` → **SURGICAL** swap (replace drifting picks with best non-drifting candidates by score),
-  - else → **FULL** rebuild (`generateSubspace` via `WeightedSubspaceSampler` if `FeatureImportance` is set, otherwise uniform) and `resetLearning()`.
-- Predictions: importance-weighted vote (`predictProbaWeighted`) or fallback to plain `srp.predictProba` if no importance / no ensemble yet.
-- Constants: `ENSEMBLE_FIELD_CANDIDATES`, `SUBSPACE_FIELD_CANDIDATES`, `CLASSIFIER_FIELD_CANDIDATES`.
-- Fields: `srpWrapper`, `tau`, `rng`, `importance`, plus counters: `handleDriftCalls`, `totalKept/Surgical/Full/NoReplacement`, `refreshCalls`, `totalRefreshed`, `weightedPredictions`, `unweightedFallbacks`, `lastSummary`, `lastLearnerWeights`.
-- Inner: `RefreshSummary { ensembleSize, refreshedCount }`.
-- Public methods: ctor `(SRPWrapper)`, `(SRPWrapper, double, long)`, `(SRPWrapper, double, long, FeatureImportance)`; `setFeatureImportance`, `getFeatureImportance`, `train(...)` (delegates), `predict`, `predictProba`, `predictProbaWeighted`, `handleDrift(Set<Integer>, double[])`, `refreshAllSubspaces()`, getters/counters, `getSRPWrapper`, `getTau`, `name`.
-- Deps: `SRPWrapper`, `FeatureImportance`, `WeightedSubspaceSampler`, `DriftActionSummary`, MOA `Classifier`.
+### `NativeDriftAwareSRP implements ModelWrapper`
+- File: `src/main/java/thesis/models/NativeDriftAwareSRP.java`
+- **The DA-SRP implementation every variant runs.** Owns its ensemble explicitly: MOA
+  `ARFHoeffdingTree` base learners, each with a fixed feature subspace (a "patch"), online
+  bagging, and a per-learner ADWIN drift channel with a background learner. No reflection.
+- Replaced `DriftAwareSRP`, which wrapped MOA `StreamingRandomPatches` and reached into its
+  private per-learner subspace arrays via reflection. That class sat behind a `da_srp_native`
+  flag no config ever set, and has been **deleted** together with the flag.
+- On drift (`handleDrift`), per learner: overlap 0 → **KEEP**; overlap below `tau` → **SURGICAL**
+  swap of the drifting picks; above → **FULL** rebuild (`WeightedSubspaceSampler` when
+  `FeatureImportance` is present, uniform otherwise). When no acceptable replacement exists the
+  learner is recorded as **NO_REPLACEMENT**.
+- Component B: subspaces drawn importance-weighted (`importancePower`, `samplingBeta`).
+  Component C: `predictProba` blends the plain vote toward a top-K importance-weighted
+  correction (`correctionAlpha`, capped by `maxBlendAlpha`).
+- The supplied `FeatureSelector` is kept only for interface compatibility — this model routes the
+  FULL feature space. `getCurrentSelection()` returns the union of the ensemble's subspaces,
+  which is what `RunDetailedRecorder` logs.
+- Emits a `DriftEvent` (top-level class in `thesis.models`, formerly nested in `DriftAwareSRP`)
+  to the runner's listener, carrying the `DriftActionSummary` with per-learner actions.
 - State: complete.
 
 ### Smoke-tests
-`ModelsSmokeTest` (FeatureSpace, FilteredHeaderBuilder, HT/ARF/SRP), `DriftAwareSRPSmokeTest` (importance/sampler/drift actions).
+`WrapperSelectionSmokeTest` (FeatureSpace, FilteredHeaderBuilder, HT/ARF/SRP and how they follow selection changes), `ImportanceSamplerSmokeTest` (FeatureImportance + WeightedSubspaceSampler — rescued from the deleted `DriftAwareSRPSmokeTest`), `DAARFRepairSmokeTest` (DA-ARF subspace repair).
 
 ---
 
@@ -398,125 +415,123 @@ moa.options.AbstractOptionHandler  +  moa.streams.InstanceStream
 - State: data-export complete; visual rendering not implemented (likely intentional — done in Python).
 
 ### Smoke-tests
-`EvaluationSmokeTest`, `StatsSmokeTest`.
+`EvaluationSmokeTest`, `StatisticalTestsSmokeTest`, `MetricsSmokeTest`.
 
 ---
 
 ## Package `thesis.pipeline`
 
-### `StreamMetrics`
-- File: `src/main/java/thesis/pipeline/StreamMetrics.java`
-- Lightweight throughput/accuracy counters used by `StreamPipeline`.
-- Fields: `count`, `correct`, `totalTimeNanos`, `peakMemoryBytes`, `lastUpdateNanos`. `@Getter`.
-- Methods: `update`, `recordMemory`, `reset`, `getAccuracy`, `getAvgTimeMicros`.
-- State: complete.
+> Shrank to three classes. `StreamPipeline`, `StreamMetrics`, `RecordingMetrics`,
+> `ExperimentRunner` and `Shims` were **deleted**: the production path is
+> `UnifiedStreamExperimentRunner`, which drives its own prequential loop and builds streams,
+> models, selectors and detectors itself. The pipeline classes duplicated that orchestration
+> without being called by it, and `Shims`' four factories were
+> `UnsupportedOperationException` stubs.
 
-### `RecordingMetrics extends StreamMetrics`
-- File: `src/main/java/thesis/pipeline/RecordingMetrics.java`
-- Streaming CSV writer attached as the pipeline's metrics. Emits a row every `sampleEvery` instances with `instance_num,kappa,kappa_per,accuracy,ram_hours,feature_stability_ratio,drift_count,recovery_time`.
-- Maintains an inline κ (per-class true/pred totals) and κ_per (vs. no-change baseline), plus its own RAM-hour integration and drift/recovery tracking (`RECOVERY_THRESHOLD = 0.01`).
-- Methods: ctor `(BufferedWriter, int, FeatureSelector)`, package-private `bindPipeline(StreamPipeline, TwoLevelDriftDetector)`, override `update`, package-private `flushFinalRow`. Private helpers: `writeRow`, `accuracy`, `cohenKappa`, `kappaTemporal`.
-- Deps: `StreamPipeline`, `TwoLevelDriftDetector`, `FeatureSelector`.
-- State: complete.
+### `SyntheticStreamFactory`
+- Builds every synthetic stream used by the blocks: `createSEA`, `createMultiDriftSEA`,
+  `createSTAGGER`, `createHyperplane`, `createRandomRBF`, `createCustomFeatureDrift`,
+  `createLEDDrift`, plus `addNoiseFeatures` (wraps a stream in the private inner
+  `NoiseAugmentedStream`) and `buildCyclicAbruptStream` (the `numDrifts+1`-segment cyclic
+  concept switcher used for the Low/HiDyn pairs).
 
-### `SyntheticStreamFactory` (final, utility)
-- File: `src/main/java/thesis/pipeline/SyntheticStreamFactory.java`
-- Factories: `createSEA`, `createHyperplane`, `createRandomRBF`, `createSTAGGER`, `createCustomFeatureDrift`, `addNoiseFeatures`. SEA & STAGGER are built as 4- or 3-segment `ConceptDriftStream` with abrupt changepoints (positions 25k/50k/75k for SEA; 20k/40k/60k for STAGGER).
-- Inner private: `NoiseAugmentedStream extends AbstractOptionHandler implements InstanceStream` — wraps a base stream and appends `nNoise` U(0,1) attributes; rebuilds the header with the class moved to the end.
-- State: complete.
+### `ArffSanityCheck` — runnable diagnostic
+- Prints attributes and class distribution for the three real ARFFs.
 
-### `StreamPipeline`
-- File: `src/main/java/thesis/pipeline/StreamPipeline.java`
-- Core orchestration:
-  1. `warmupIfNeeded` — drains `warmupSize` instances, builds `FeatureSpace`, fills the optional ranking PiD, calls `selector.initialize(...)`, seeds `FeatureImportance` with MI scores + zero KS.
-  2. `processInstance` — predict → compute 0/1 error → `detector.update(error, x)` → on alarm: reset drifting features in ranking PiD, refresh `FeatureImportance` with current MI + `1−p` from KSWIN → `model.train(...)`. If model is `DriftAwareSRP`, also call `handleDrift(drifting, fullRanker.scores)` and (every `refreshEvery` instances) `refreshAllSubspaces`.
-  3. `metrics.update` records prediction error + elapsed nanos.
-- Inner: `Builder` with all options; defaults `warmupSize=1500, logEvery=1000, refreshEvery=0, maxInstances=Long.MAX_VALUE, verbose=true`.
-- Fields: `source`, `selector`, `model`, `detector`, `metrics`, `space`, optional `rankingPid`/`fullRanker`/`importance`, configuration ints, `warmedUp`, `processed`, `globalAlarmsSeen`. `@Getter`.
-- Public methods: `builder`, `run`, `processInstance`, `warmupIfNeeded`. Private: `log`, `finalLog`, static `invertPValues`.
-- Deps: every `thesis.*` package except `evaluation` and `experiments`.
-- State: complete.
-
-### `ExperimentRunner`
-- File: `src/main/java/thesis/pipeline/ExperimentRunner.java`
-- Loads JSON config (`experiment_group, datasets[], variants[], seeds[], output_dir, warmup, log_every, refresh_every, max_instances, verbose`); writes `{outputDir}/{group}/{dataset}/{variant}/seed_{s}.csv` using `RecordingMetrics`.
-- Inner DTOs: `Variant {name, model, selector, detector="TWO_LEVEL"}`, `Config`.
-- Public: `main(String[])`, `runAll(Config)`. Private: `runOne`, `loadConfig`.
-- State: **stub-bound.** Calls `DatasetFactory/ModelFactory/SelectorFactory/DetectorFactory.create(...)` from `Shims.java`, all of which throw `UnsupportedOperationException`. The actual production runner is `E1Baselines`.
-
-### `Shims.java`
-- File: `src/main/java/thesis/pipeline/Shims.java`
-- Four package-private final classes (`DatasetFactory`, `ModelFactory`, `SelectorFactory`, `DetectorFactory`), each with a single static `create(name, seed)` that throws — placeholders for `ExperimentRunner`. **State: TODO.**
-
-### `ArffSanityCheck`
-- Diagnostic with hard-coded ARFF paths under `…/preproccessing/…`. State: complete (works only on the user's machine).
-
-### Smoke-tests
-`PipelineSmokeTest`, `SyntheticStreamSmokeTest`.
-
----
-
-## Package `thesis.experiments`
-
-### `E1Baselines`
-- File: `src/main/java/thesis/experiments/E1Baselines.java`
-- The functional E1 driver. Loads `E1_baselines.json`, sweeps `datasets × detectors × variants × seeds`, builds the matching `InstanceStream` (synthetic generator or `ArffFileStream`) + `StaticFeatureSelector` + chosen `ModelWrapper` + chosen `TwoLevelDriftDetector`, runs the pipeline manually (calls `pipe.processInstance` per instance and feeds `MetricsCollector`), writes `summary.csv` and `validation_level1.txt`.
-- The validation step requires every non-baseline variant to beat both `MajorityClass` and `NoChange` on the chosen metric (default `kappa`) by `min_margin` (default 0.0).
-- Public: `main(String[])`. Private: `runOne`, `buildStream`, `buildModel`, `buildDetector`, `pickMetric`, `writeSummary`, `validateLevel1`, three list helpers.
-- Deps: `pipeline.*` (StreamPipeline, SyntheticStreamFactory), `models.*` (ARF, HT, SRP, MajorityClass, NoChange), `selection.StaticFeatureSelector`, `discretization.PiDDiscretizer`, `detection.TwoLevelDriftDetector`, `evaluation.MetricsCollector`.
-- State: complete for the variants listed (`HT+S1, ARF+S1, SRP+S1, MajorityClass, NoChange`); does NOT yet wire other selectors (S2/S3/S4) or the drift-aware SRP — those would need new `case` arms in `buildModel` / a configurable selector.
-  Bug-watch: in `runOne` the loop calls `model.predict` + `mc.update` AND then `pipe.processInstance(raw)` — the pipeline itself also predicts/trains, so each instance is being predicted twice (once for `mc`, once inside the pipeline) and trained once via the pipeline's path. Worth reviewing.
-  In the JSON, `YahooFinance` is mistakenly pointed at `data/arff/nhts.arff` (same as `NHTS`).
-
-### `E1_baselines.json`
-- 5 variants, 8 datasets (5 synthetic + 3 ARFF), 5 seeds, validation against MC + NoChange.
+### `SyntheticStreamSmokeTest` — runnable diagnostic
+- Prints per-stream summary stats for the synthetic generators (no `RESULT:` line).
 
 ---
 
 # Component coverage vs. plan
 
-| Plan component | Implementation | Status |
+| Area | Implementation | State |
 |---|---|---|
-| **Detection** — global + per-feature | ADWIN, HDDM_A, HDDM_W (Level-1) ; KSWINSingleFeature → PerFeatureKSWIN with BH-FDR (Level-2) ; combined as `TwoLevelDriftDetector` | ✔ complete |
-| **Selection** — S1/S2/S3/S4 | `StaticFeatureSelector` (S1), `PeriodicSelector` (S2), `AlarmTriggeredSelector` (S3), `DriftAwareSelector` (S4) — all over an `AbstractFrequencyRanker` (IG/MI/χ²) on PiD output | ✔ complete |
+| **Detection** — Level-1 global + Level-2 per-feature | `ADWINChangeDetector`, `HDDMChangeDetector`, `KSWINSingleFeature`, `PerFeatureKSWIN`, `TwoLevelDriftDetector` (+ BH-FDR) | ✔ complete |
 | **Discretization** — PiD two-layer | `Layer1Histogram` + `Layer2Merger` + `FeatureDiscretizer` + `PiDDiscretizer` | ✔ complete |
-| **Models** — baselines + ensembles | `MajorityClassWrapper`, `NoChangeWrapper`, `HoeffdingTreeWrapper`, `ARFWrapper`, `SRPWrapper`, `DriftAwareSRP` (+ `FeatureImportance` + `WeightedSubspaceSampler`) | ✔ complete |
-| **Evaluation** — metrics + statistical tests | Prequential Acc, Cohen κ, Temporal κ, Recovery, RAM-h, Stability, MetricsCollector + Friedman / Nemenyi / Wilcoxon / CD-export | ✔ complete (no PNG diagrams generated in Java; CSVs only) |
-| **Pipeline** — orchestration | `StreamPipeline` (Builder), `StreamMetrics`, `RecordingMetrics` | ✔ complete |
-| **Experiments** | `E1Baselines` (E1 baselines vs. MajorityClass/NoChange) | ✔ for E1's 5 variants. **Other experiments (E2/E3/…) — selectors S2/S3/S4 and DriftAwareSRP — NOT YET wired into a runner.** |
-| **Generic JSON runner** | `ExperimentRunner` + `Shims.java` factories | ✗ stubs — `DatasetFactory/ModelFactory/SelectorFactory/DetectorFactory` all throw |
-| **Tests** | 14 ad-hoc `*SmokeTest.java` `main` classes; no `src/test/`, no JUnit | functional but not a real test framework |
-| **Configs** | One JSON next to `E1Baselines.java`; no `resources/`, no YAML | OK |
+| **Selection** — S1–S4 | `StaticFeatureSelector`, `AlarmTriggeredSelector`, `PeriodicSelector`, `DriftAwareSelector`, `NoFeatureSelection`; ranker: `InformationGainRanker` | ✔ complete and wired in `buildSelector` |
+| **Models** — baselines + ensembles + drift-aware | `MajorityClassWrapper`, `NoChangeWrapper`, `HoeffdingTreeWrapper`, `ARFWrapper`, `SRPWrapper`, `DriftAwareSRP` / `NativeDriftAwareSRP`, `DAARFWrapper` (+ `FeatureImportance`, `WeightedSubspaceSampler`, `DriftActionSummary`, `ModelSize`) | ✔ complete and wired in `buildModel` |
+| **Evaluation** — metrics + statistical tests | Prequential Acc, Cohen κ, Temporal κ, `RecoveryTime`, `RAMHours` (model-size based), `FeatureStabilityRatio`, `MetricsCollector` + Friedman / Nemenyi / Wilcoxon / CD-export | ✔ complete |
+| **Pipeline** — orchestration | — | **removed.** `StreamPipeline`/`StreamMetrics`/`RecordingMetrics` were bypassed by the runner's own prequential loop |
+| **Experiments** | `UnifiedStreamExperimentRunner` + `RunDetailedRecorder` + `BlockStatisticalAnalysis`, driven by `master_experiments.json` | ✔ all five blocks, all selectors, both drift-aware families |
+| **Generic JSON runner** | — | **removed.** `ExperimentRunner` + `Shims` were `UnsupportedOperationException` stubs the production path never touched |
+| **Tests** | 17 runnable `*SmokeTest` classes with `main()`, **237 assertions, all passing**; no `src/test/`, no JUnit | functional but not a real test framework |
+| **Configs** | One JSON next to `UnifiedStreamExperimentRunner.java`; no `resources/`, no YAML | OK |
+| **Analysis / reporting** | Python package `analysis/` (`python -m analysis`) → 63 LaTeX tables + 87 figures | ✔ complete |
 
 **What's missing or partial**
-- The "official" generic runner `ExperimentRunner` is not connected — its four factories are `UnsupportedOperationException` stubs (`Shims.java`). `E1Baselines` works around this with hard-coded `switch` arms.
-- No experiment configs for S2/S3/S4 selectors, no config for `DriftAwareSRP` — the code exists, the JSON sweeps don't reach it.
-- `E1_baselines.json` has the YahooFinance entry pointing at the NHTS ARFF (typo).
-- `E1Baselines.runOne` evaluates each instance twice (own `model.predict` + `pipe.processInstance` which also predicts and trains) — likely an unintended overlap to verify before reporting numbers.
-- `CDDiagramExporter` writes CSVs only — actual CD-diagram drawing must be done externally.
-- No real JUnit test suite (only `main`-driven smoke tests with a custom `report(...)` helper).
+
+- `CDDiagramExporter` writes CSVs only — the diagrams themselves are drawn in `analysis/`.
+- No real JUnit suite (only `main`-driven smoke tests with a custom `report(...)` helper), so
+  nothing runs the tests automatically; they have to be invoked class by class. That is how two
+  of them silently rotted: `WrapperSelectionSmokeTest` still asserted that a model wrapper
+  forwards drift alarms to the selector (the runner took that job over), and
+  `AlarmTriggeredSelectorSmokeTest` asserted that tie-breaking preserves a feature whose score
+  had collapsed by a full `tieEpsilon` bucket. Both are fixed; a one-line script that runs every
+  `*SmokeTest` main would have caught them at the time.
+**Recently fixed (was: what's wrong)**
+
+- **DA-* selection artefacts were degenerate.** `RunDetailedRecorder` logged
+  `selector.getCurrentSelection()`, but the DA models ignore the selector and draw their own
+  per-learner subspaces, so every DA run looked like a frozen S1: one `initial` row,
+  `feature_stability_mean` 1.000, `selection_changes_mean` 0, `mean_selected_feature_count`
+  = `ceil(sqrt(d))`. The runner now passes `model.getCurrentSelection()` (which the DA wrappers
+  override to return the union of the ensemble's subspaces) and tags model-driven changes
+  `subspace_change`.
+- **The `initial` trigger was emitted twice per run.** `onInitialSelection` left
+  `lastSelectionChangeInstance` at -1, so the first genuine re-selection was also labelled
+  `initial` — 75 such rows across 40 `ARF+S2` runs in E3. Fixed for every block.
 
 ---
 
 # Data flow
 
-**Entry point** (production): `thesis.experiments.E1Baselines.main` reads `E1_baselines.json`.
+**Entry point** (production): `thesis.experiments.UnifiedStreamExperimentRunner.main` reads
+`master_experiments.json`. Launch with `bash stream/run_experiments.sh` — it compiles with
+JDK 17 and adds `-javaagent:sizeofag`, without which every RAM-Hours measurement is `NaN`.
 
-For each `(dataset, detector, variant, seed)`:
+The runner expands `blocks × datasets × variants × seeds` into a flat `WorkItem` list and
+submits it to a fixed thread pool. Each `RunWorker` is self-contained:
 
-1. **Stream construction** — `buildStream(...)` → either `SyntheticStreamFactory.create*` (optionally wrapped in `addNoiseFeatures`) or `ArffFileStream`. `prepareForUse()` is called.
-2. **Selector + model + detector + PiD** built from the JSON keys; `MetricsCollector` instantiated.
-3. **Pipeline build** — `StreamPipeline.builder()...build()` discovers the header via `FeatureSpace`, marks itself warmed up if the selector is already initialised.
-4. **Warm-up** — `warmupIfNeeded()` pulls `warmupSize` instances, feeds them into the optional ranking PiD, then `selector.initialize(window, labels)`. Optional `FeatureImportance` is seeded.
-5. **Per-instance loop** (per instance: `Instance raw`):
-   - `x = space.extractFeatures(raw)`, `y = (int) raw.classValue()`.
-   - Optional ranking PiD update; optional `fullRanker.update(pid.discretizeAll(x), y)`.
-   - `yhat = model.predict(raw)`; `error = yhat==y ? 0 : 1`.
-   - `detector.update(error, x)` — Level-1 sees `error`, Level-2 sees `x[]`. On alarm Level-2 returns BH-corrected drifting feature indices.
-   - On alarm: drifting features reset in ranking PiD; `FeatureImportance` updated with current MI scores + `1 − pValue` per feature.
-   - `model.train(raw, y, alarm, drifting)` — wrapper calls `selector.update(...)` internally so the selection responds to drift signals. `DriftAwareSRP` additionally calls `handleDrift(drifting, fullRanker.scores)` — per-learner KEEP / SURGICAL / FULL action.
-   - `metrics.update(y, yhat, elapsedNanos)` (or `RecordingMetrics.update` to also flush a CSV row every `sampleEvery`).
-6. **Per-run output** — `RecordingMetrics` writes one CSV; `E1Baselines` instead writes one row per run into `summary.csv` and aggregates means for level-1 validation.
-7. **Aggregation across datasets/seeds** — `validateLevel1(...)` writes `validation_level1.txt`. Cross-method statistical comparison (Friedman / Nemenyi / Wilcoxon / CD CSVs) is available in `thesis.evaluation.StatisticalTests` but is *not* yet invoked by `E1Baselines` — so far that wiring stops at `summary.csv`.
+1. **Stream construction** — `buildStream(...)` → `SyntheticStreamFactory.create*` (optionally
+   wrapped in `addNoiseFeatures`) or `ArffFileStream`; `prepareForUse()` is called.
+2. **Warm-up** — `warmupSize` (1500) instances are pulled into a window, fed to the ranking PiD,
+   then `selector.initialize(window, labels)`. `FeatureImportance` is seeded from the full ranker.
+3. **Selector / model / detector** built by `buildSelector`, `buildModel`, `buildDetector` from
+   the variant spec; `MetricsCollector` gets `setModelSizeSupplier(model::modelByteSize)` so
+   RAM-Hours measures the model, not the heap. `RunDetailedRecorder` is attached, and for
+   DA-SRP a drift listener forwards `DriftActionSummary` per adaptation event.
+4. **Per-instance loop** (`runPrequentialLoop`), for each `Instance x`:
+   - `feats = space.extractFeatures(x)`, `yTrue = (int) x.classValue()`.
+   - `updateFullFeatureRanker(feats, yTrue)` — ranking PiD + full-space ranker.
+     **Outside the timed region**, so baselines are not charged for work only DA models consume.
+   - *timed region starts*: `yHat = model.predict(x)` (own `predictNanos`).
+   - `detector.update(err, feats)` — Level-1 sees the 0/1 error, Level-2 sees the raw feature
+     vector. On alarm Level-2 returns BH-FDR-corrected drifting feature indices.
+   - on alarm: `updateFeatureImportanceFromDetector()` — importance is refreshed from the
+     ranker scores plus `1 − pValue` per feature.
+   - `selector.update(feats, yTrue, alarm, drifting)` — called by the runner, **not** by the
+     model wrapper.
+   - `model.train(x, yTrue, alarm, drifting)`. `NativeDriftAwareSRP`/`DAARFWrapper` decide
+     KEEP / SURGICAL / FULL per learner here.
+   - *timed region ends*: `metrics.update(yTrue, yHat, predictNanos, stepNanos)`, so
+     `throughput` covers the whole prequential step while `predict_latency_us` isolates
+     inference. CSV buffering stays outside the timed region.
+   - `recorder.onInstance(...)` buffers window metrics, alarms, selection changes; DA-ARF delta
+     counters are polled and turned into adaptation events when they move.
+5. **Per-run output** — the recorder is drained single-threaded after the pool finishes and
+   written into the block's `windows.csv`, `drift_alarms.csv`, `feature_selections.csv`,
+   `feature_importance.csv`, `recovery_time.csv`, `adaptation_events.csv`.
+6. **Per-block aggregation** — one summary row per run in `E{n}_*.csv`, plus
+   `BlockStatisticalAnalysis` writing Friedman / Nemenyi / Wilcoxon-Holm / CD CSVs into
+   `stat_tests/`. Globally: `master_summary.csv` (means over seeds) and `runs_raw.csv`.
+7. **Reporting** — `python -m analysis` turns those CSVs into `stream/results/tables/*.tex`
+   and `stream/results/figures/**`.
 
-In short: `Instance → FeatureSpace.extractFeatures → (ranking PiD + fullRanker) + (model.predict, error, TwoLevelDriftDetector) → on alarm: feature-importance refresh + DriftAwareSRP.handleDrift → model.train (which updates the selector) → metrics`.
+In short: `Instance → FeatureSpace.extractFeatures → ranking PiD + full ranker → model.predict →
+TwoLevelDriftDetector → (on alarm) FeatureImportance refresh → selector.update →
+model.train (DA: per-learner KEEP/SURGICAL/FULL) → MetricsCollector + RunDetailedRecorder`.
+
+> **Note.** Earlier versions of this document described `StreamPipeline` as the production
+> path. It never was — the runner has always driven its own loop — and those classes have now
+> been deleted along with `ExperimentRunner`/`Shims`.

@@ -21,7 +21,6 @@ public class SRPWrapper implements ModelWrapper {
             "indices", "subSpaceIndices", "subspaceIndices"
     };
 
-    /** MOA's own default ({@code AbstractClassifier.randomSeedOption}) — keeps legacy behaviour. */
     public static final int DEFAULT_SEED = 1;
 
     @Getter private final FeatureSelector selector;
@@ -86,9 +85,6 @@ public class SRPWrapper implements ModelWrapper {
         s.ensembleSizeOption.setValue(ensembleSize);
         trySetCli(s, 'a', String.valueOf(lambda));
         trySetCli(s, 'o', "randompatches");
-        // Must precede prepareForUse(): AbstractClassifier.resetLearning() seeds classifierRandom
-        // from randomSeedOption there. Without this every run shares MOA's default seed, so the
-        // 5 configured seeds collapse to 5 identical runs on deterministic (ARFF) streams.
         s.setRandomSeed(seed);
         s.prepareForUse();
         return s;

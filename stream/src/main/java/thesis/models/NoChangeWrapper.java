@@ -52,7 +52,6 @@ public class NoChangeWrapper implements ModelWrapper {
     @Override
     public void reset() { lastLabel = -1; }
 
-    /** The whole model is a single int holding the previous label. */
     @Override
     public long modelByteSize() { return 16L + 4L; }
 

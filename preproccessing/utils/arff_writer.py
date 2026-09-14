@@ -8,9 +8,6 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Primary public function (simplified interface)
-# ---------------------------------------------------------------------------
 
 def dataframe_to_arff(
     df: pd.DataFrame,
@@ -91,7 +88,7 @@ def write_arff(
 
 
 def _should_be_nominal(series: pd.Series) -> bool:
-    """Return True when the series should be written as a NOMINAL attribute."""
+    """Return True when the series should be written as a NOMINAL."""
     if pd.api.types.is_bool_dtype(series):
         return True
     if pd.api.types.is_object_dtype(series):
@@ -102,7 +99,7 @@ def _should_be_nominal(series: pd.Series) -> bool:
 
 
 def _infer_arff_type(series: pd.Series) -> str:
-    """Return the ARFF type string for a pandas Series (fallback for write_arff)."""
+    """Return the ARFF type string for a pandas Series (fallback for."""
     if _should_be_nominal(series):
         return "STRING"
     return "NUMERIC"
@@ -138,7 +135,7 @@ def _write_arff_core(
 
 
 def _quote_if_needed(name: str) -> str:
-    """Wrap attribute name in single quotes if it contains special characters."""
+    """Wrap attribute name in single quotes if it contains special."""
     if any(ch in name for ch in (" ", ",", "'", "%", "\\", "{", "}", "@")):
         escaped = name.replace("'", "\\'")
         return f"'{escaped}'"

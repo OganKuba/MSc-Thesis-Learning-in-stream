@@ -22,36 +22,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/**
- * Per-block statistical hypothesis testing over the seed-averaged metrics produced
- * by {@link UnifiedStreamExperimentRunner}.
- *
- * <p>For each configured metric the analyser builds a {@code datasets × variants}
- * matrix (seed-averaged), runs Friedman + Nemenyi to produce average ranks and a
- * critical-difference diagram, then runs paired Wilcoxon signed-rank tests across
- * all (dataset, seed) pairs and Holm-adjusts the resulting p-values. Outputs land
- * in {@code results/<block>/stat_tests/}.
- *
- * <p>Reuses existing {@link FriedmanTest}, {@link NemenyiPostHoc},
- * {@link WilcoxonSignedRank}, {@link StatisticalTests} and {@link CDDiagramExporter}
- * machinery; no new statistics are reimplemented.
- */
 public final class BlockStatisticalAnalysis {
 
-    /** Metrics we test by default. */
     public enum Metric {
         ACCURACY("accuracy", true),
         KAPPA("kappa", true),
-        // Temporal kappa, averaged over all windows of the run. The old enum also carried
-        // KAPPA_PER, which was the very same TemporalKappa measured in the final window only —
-        // so every block produced two independent rank tables and CD diagrams for one metric.
-        // The windowed aggregation is kept because it uses the whole run rather than its last
-        // 1000 instances.
         KAPPA_TEMPORAL("kappa_temporal", true),
         RECOVERY_TIME("recovery_time", false),
-        // Depth of the post-alarm accuracy dip. Unlike recovery_time this is defined even when a
-        // variant never recovers (or never degrades), so the Friedman test keeps its full set of
-        // datasets instead of dropping to the handful where some episode happened to close.
         RECOVERY_MAX_DROP("recovery_max_drop", false),
         RAM_HOURS_GB("ram_hours_gb", false);
 
@@ -75,13 +52,11 @@ public final class BlockStatisticalAnalysis {
         this.alpha = alpha;
     }
 
-    /** Public entry. Writes all stat-test artefacts for a single block. */
     public void analyseBlock(String blockId, List<UnifiedStreamExperimentRunner.RunArtifacts> runs,
                              Path outDir) throws IOException {
         if (runs == null) runs = Collections.emptyList();
         Files.createDirectories(outDir);
 
-        // ranks.csv accumulates rows across all metrics; same for friedman/nemenyi/wilcoxon/cd.
         try (PrintWriter friedmanW = openWriter(outDir.resolve("friedman.csv"),
                 "block,dataset_group,metric,num_algorithms,num_datasets,statistic,p_value,significant,alpha");
              PrintWriter nemenyiW = openWriter(outDir.resolve("nemenyi.csv"),
@@ -109,7 +84,7 @@ public final class BlockStatisticalAnalysis {
 
     public List<String> warnings() { return Collections.unmodifiableList(warnings); }
 
-    // ------------------------------------------------------------------------
+    // Short note
 
     private void analyseMetric(String blockId, Metric m,
                                List<UnifiedStreamExperimentRunner.RunArtifacts> runs,
@@ -121,7 +96,7 @@ public final class BlockStatisticalAnalysis {
         // 1. Build per-(dataset, seed, variant) score table.
         TreeSet<String> variantSet = new TreeSet<>();
         TreeSet<String> datasetSet = new TreeSet<>();
-        Map<String, Map<String, Double>> byVariant = new LinkedHashMap<>(); // variant -> "dataset|seed" -> score
+        Map<String, Map<String, Double>> byVariant = new LinkedHashMap<>();
         for (UnifiedStreamExperimentRunner.RunArtifacts ra : runs) {
             if (!ra.ok()) continue;
             UnifiedStreamExperimentRunner.RunResult r = ra.result;
@@ -140,8 +115,6 @@ public final class BlockStatisticalAnalysis {
             return;
         }
 
-        // 2. Build per-dataset mean matrix (rows=datasets, cols=variants). Drop any
-        //    dataset that lacks a value for some variant (Friedman requires complete blocks).
         List<String> usableDatasets = new ArrayList<>();
         List<double[]> rowList = new ArrayList<>();
         Map<String, double[]> perDatasetForVariant = new LinkedHashMap<>(); // variant -> per-dataset mean
@@ -170,7 +143,7 @@ public final class BlockStatisticalAnalysis {
             }
         }
 
-        // 3. ranks.csv per (metric, variant) — always written even if Friedman can't run.
+        // 3. ranks.csv per (metric, variant) - always written even if
         double[][] dmatrix = rowList.toArray(new double[0][]);
         double[] avgRanks = null;
         NemenyiPostHoc.Result nem = null;
@@ -188,7 +161,7 @@ public final class BlockStatisticalAnalysis {
             warn(blockId, m, "need >= 2 complete datasets and >= 2 variants for Friedman; skipping");
         }
 
-        // ranks: avg_rank, mean_score (across datasets), std_score (across datasets)
+        // ranks: avg_rank, mean_score (across datasets), std_score (across
         for (int j = 0; j < variants.size(); j++) {
             double[] perDs = perDatasetForVariant.get(variants.get(j));
             // Restrict to usable datasets
@@ -207,7 +180,6 @@ public final class BlockStatisticalAnalysis {
 
         // 4. friedman.csv
         if (fr != null) {
-            // Prefer Iman-Davenport F p-value when available, fall back to chi-square p-value.
             double stat = Double.isFinite(fr.imanDavenport) ? fr.imanDavenport : fr.chiSquared;
             double p = Double.isFinite(fr.pValueF) ? fr.pValueF : fr.pValueChi;
             friedmanW.printf(Locale.ROOT, "%s,%s,%s,%d,%d,%s,%s,%d,%s%n",
@@ -216,7 +188,7 @@ public final class BlockStatisticalAnalysis {
                     fmt(stat), fmt(p), p < alpha ? 1 : 0, fmt(alpha));
         }
 
-        // 5. Nemenyi — needs avgRanks and the q-table only supports k <= 20.
+        // 5. Nemenyi - needs avgRanks and the q-table only supports k <= 20.
         if (fr != null && fr.numMethods <= 20) {
             try {
                 nem = new NemenyiPostHoc(alpha).test(fr.averageRanks, fr.numDatasets);
@@ -237,16 +209,11 @@ public final class BlockStatisticalAnalysis {
             warn(blockId, m, "Nemenyi q-table tops out at k=20; got k=" + fr.numMethods + " — skipping");
         }
 
-        // 6. cd_diagram.* — written even if Nemenyi unavailable (cd_diagram.csv records ranks only).
         writeCDDiagram(outDir, blockId, m, variants, usableDatasets, fr, nem, cdCsvW);
 
-        // 7. Wilcoxon — pair variants on aligned (dataset, seed) vectors. Holm-adjust within metric.
         runWilcoxonAndWrite(blockId, m, variants, byVariant, wilcoxonW);
     }
 
-    // ------------------------------------------------------------------------
-    // Per-metric helpers
-    // ------------------------------------------------------------------------
 
     private static double extractMetric(Metric m, UnifiedStreamExperimentRunner.RunArtifacts ra) {
         UnifiedStreamExperimentRunner.RunResult r = ra.result;
@@ -313,7 +280,6 @@ public final class BlockStatisticalAnalysis {
         }
     }
 
-    /** Holm step-down adjustment over the p-value field of each test row (NaNs left as NaN). */
     private static double[] holmAdjust(List<double[]> tests) {
         int m = tests.size();
         Integer[] order = new Integer[m];
@@ -347,7 +313,6 @@ public final class BlockStatisticalAnalysis {
         return out;
     }
 
-    /** Rank-biserial effect size: (wins - losses) / (wins + losses + ties). */
     private static double computeRankBiserial(double[] a, double[] b) {
         int wins = 0, losses = 0, ties = 0;
         for (int i = 0; i < a.length; i++) {
@@ -361,16 +326,7 @@ public final class BlockStatisticalAnalysis {
         return (double) (wins - losses) / total;
     }
 
-    // ------------------------------------------------------------------------
-    // CD diagram writers (CSV + SVG + TeX)
-    // ------------------------------------------------------------------------
 
-    /**
-     * @param usableDatasets dataset names in the same order as the rows of the Friedman matrix,
-     *                       so {@code rank_matrix_*.csv} can name them instead of emitting
-     *                       placeholders. The rank matrix is otherwise unreadable: a reader
-     *                       cannot tell which stream a row of ranks belongs to.
-     */
     private void writeCDDiagram(Path outDir, String blockId, Metric m, List<String> variants,
                                 List<String> usableDatasets,
                                 FriedmanTest.Result fr, NemenyiPostHoc.Result nem,
@@ -391,13 +347,9 @@ public final class BlockStatisticalAnalysis {
                 blockId, m, variants, ranks, cd);
         writeCDDiagramTex(outDir.resolve("cd_diagram_" + m.csvName + ".tex"),
                 blockId, m, variants, ranks, cd);
-        // The combined ranks file used by avg_ranks.csv / rank_matrix.csv consumers
-        // mirrors what CDDiagramExporter writes for downstream tooling.
         CDDiagramExporter.writeRanks(outDir.resolve("avg_ranks_" + m.csvName + ".csv"),
                 variants, ranks, cd, nd, alpha);
         if (fr.ranks != null) {
-            // Real dataset names, in Friedman-matrix row order. Falls back to D1..Dn only if the
-            // two ever disagree in length, which would signal a bug rather than missing data.
             List<String> dsNames = new ArrayList<>();
             if (usableDatasets != null && usableDatasets.size() == fr.numDatasets) {
                 dsNames.addAll(usableDatasets);
@@ -515,9 +467,6 @@ public final class BlockStatisticalAnalysis {
         }
     }
 
-    // ------------------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------------------
 
     private static PrintWriter openWriter(Path file, String header) throws IOException {
         Files.createDirectories(file.toAbsolutePath().getParent());
@@ -589,7 +538,6 @@ public final class BlockStatisticalAnalysis {
                 .replace("~", "\\~{}");
     }
 
-    /** Compact summary for logging/tests. */
     public String summary() {
         if (warnings.isEmpty()) return "no warnings";
         StringWriter sw = new StringWriter();

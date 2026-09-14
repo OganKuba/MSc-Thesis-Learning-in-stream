@@ -65,7 +65,6 @@ public class DriftAwareSelector implements FeatureSelector {
     @Getter private long updatesBeforeInit;
 
     private EventListener listener;
-    /** Which path last changed the selection: "drift_alarm" or "periodic". */
     private String lastSelectionTrigger = "initial";
 
     @Override

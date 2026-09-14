@@ -44,14 +44,7 @@ def parse_pipe(s) -> list[str]:
 
 
 def parse_pipe_int(s) -> list[int]:
-    """
-    Parses strings like:
-      1|2|3
-      1.0|2.0|3.0
-      1:0.099|2:0.087
-
-    For feature-score pairs, only the feature id before ':' is returned.
-    """
+    """Parses strings like:."""
     values: list[int] = []
 
     for x in parse_pipe(s):
@@ -75,7 +68,7 @@ def parse_pipe_float(s) -> list[float]:
     return values
 
 
-# --- Per-block loaders ---------------------------------------------------
+# Per-block loaders
 
 _PER_BLOCK_FILES = {
     "windows": "windows.csv",
@@ -88,7 +81,7 @@ _PER_BLOCK_FILES = {
 
 
 def load_block(block: str) -> dict:
-    """Load every CSV produced by UnifiedStreamExperimentRunner for one block."""
+    """Load every CSV produced by UnifiedStreamExperimentRunner for one."""
     if block not in config.BLOCK_DIRS:
         raise ValueError(f"unknown block: {block}")
 
@@ -124,7 +117,7 @@ def load_e5():
     return load_block("E5")
 
 
-# --- Top-level files -----------------------------------------------------
+# Top-level files
 
 def load_master_summary() -> pd.DataFrame | None:
     return _safe_read(config.MASTER_SUMMARY_FILE)
@@ -134,10 +127,10 @@ def load_runs_raw() -> pd.DataFrame | None:
     return filter_ok(_safe_read(config.RUNS_RAW_FILE))
 
 
-# --- stat_tests/ loaders -------------------------------------------------
+# stat_tests/ loaders
 
 def load_stat_tests(block: str) -> dict:
-    """Read the contents of <block>/stat_tests/. Returns a dict with per-metric tables."""
+    """Read the contents of <block>/stat_tests/. Returns a dict with."""
     base = config.BLOCK_DIRS[block] / config.STAT_TESTS_SUBDIR
     if not base.exists():
         warnings.warn(f"missing stat_tests dir: {base}")
@@ -166,7 +159,7 @@ def load_stat_tests(block: str) -> dict:
     return out
 
 
-# --- Inventory -----------------------------------------------------------
+# Inventory
 
 def data_inventory():
     print("=" * 72)

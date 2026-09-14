@@ -13,30 +13,6 @@ import java.util.Random;
 import java.util.Set;
 import java.util.function.Consumer;
 
-/**
- * Native (reflection-free) reimplementation of {@link DriftAwareSRP}.
- *
- * <p>The original {@code DriftAwareSRP} wraps MOA {@code StreamingRandomPatches} and pokes its
- * private per-learner subspace arrays via reflection (fragile, version-dependent, hard to
- * instrument/defend). This class instead owns the ensemble explicitly — the same architecture as
- * {@link DAARFWrapper}: a custom ensemble of MOA {@link ARFHoeffdingTree} base learners, each with
- * an explicit fixed feature subspace (a "patch"), online bagging, and a per-learner ADWIN drift
- * channel with a background learner. Nothing is read or written by reflection.
- *
- * <p>Drift-aware feature adaptation (component A/B) and top-K importance-corrected voting
- * (component C) reproduce the behaviour of {@link DriftAwareSRP}:
- * <ul>
- *   <li><b>A</b> — on an external drift alarm, {@link #handleDrift} performs a per-learner
- *       KEEP / SURGICAL / FULL pass by subspace overlap with the low-importance drifting features
- *       (threshold {@code tau}).</li>
- *   <li><b>B</b> — new subspaces are drawn importance-weighted (sharpen {@code importancePower},
- *       blend-to-uniform {@code samplingBeta}).</li>
- *   <li><b>C</b> — {@link #predictProba} blends the plain ensemble vote toward a top-K
- *       importance-weighted correction with weight {@code correctionAlpha} (capped at
- *       {@code maxBlendAlpha}).</li>
- * </ul>
- * With {@code importance == null} it degenerates to a plain SRP ensemble (matches DA-SRP-A).
- */
 public class NativeDriftAwareSRP implements ModelWrapper {
 
     @Getter private final FeatureSelector selector;
@@ -52,7 +28,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
     private final Random rng;
     @Getter private FeatureImportance importance;
 
-    // --- Component B (sampling) / C (voting) hyperparameters (defaults match DriftAwareSRP) ---
     @Getter private double importancePower = 2.0;
     @Getter private double samplingBeta = 0.7;
     @Getter private double topKFraction = 0.3;
@@ -64,7 +39,7 @@ public class NativeDriftAwareSRP implements ModelWrapper {
     @Getter private int treeGracePeriod = 50;
     @Getter private double treeSplitConfidence = 0.01;
 
-    // --- tree drift-channel deltas (per-learner ADWIN), like DAARFWrapper ---
+    // tree drift-channel deltas (per-learner ADWIN), like DAARFWrapper
     @Getter private final boolean useBackgroundLearner;
     @Getter private final double warningDelta;
     @Getter private final double driftDelta;
@@ -86,7 +61,7 @@ public class NativeDriftAwareSRP implements ModelWrapper {
     @Getter private long driftCount;
     @Getter private DriftActionSummary lastSummary;
 
-    private Consumer<DriftAwareSRP.DriftEvent> driftListener;
+    private Consumer<DriftEvent> driftListener;
 
     public NativeDriftAwareSRP(FeatureSelector selector, InstancesHeader fullHeader, int numClasses,
                                int ensembleSize, int subspaceSize, double lambda, int accWindow,
@@ -128,11 +103,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         buildEnsemble();
     }
 
-    /**
-     * MOA StreamingRandomPatches uses a 60%-of-features patch by default (subspaceSize=60,
-     * mode=Percentage). Mirror that so the native ensemble matches the reflection-based DA-SRP —
-     * a narrow sqrt(M) patch collapses on imbalanced/real data (same lesson as DA-ARF).
-     */
     public static int defaultSubspaceSize(int origDim) {
         return Math.max(2, Math.min(origDim, (int) Math.ceil(0.6 * origDim)));
     }
@@ -141,11 +111,10 @@ public class NativeDriftAwareSRP implements ModelWrapper {
                                                int numClasses, long seed, FeatureImportance importance) {
         int origDim = header.numAttributes() - 1;
         return new NativeDriftAwareSRP(selector, header, numClasses,
-                /*ensemble=*/10, defaultSubspaceSize(origDim), /*lambda=*/6.0, /*accWindow=*/1000,
-                /*tau=*/0.5, /*useBkg=*/true, /*warnDelta=*/1e-4, /*driftDelta=*/1e-5, seed, importance);
+                10, defaultSubspaceSize(origDim), /*lambda=*/6.0, /*accWindow=*/1000,
+                0.5, /*useBkg=*/true, /*warnDelta=*/1e-4, /*driftDelta=*/1e-5, seed, importance);
     }
 
-    // --- setters (mirror DriftAwareSRP contract) ------------------------------------------------
 
     public void setFeatureImportance(FeatureImportance imp) {
         if (imp != null && imp.getNumFeatures() != origDim)
@@ -199,7 +168,7 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         this.treeSplitConfidence = splitConfidence;
         if (changed) buildEnsemble();
     }
-    public void setDriftListener(Consumer<DriftAwareSRP.DriftEvent> listener) {
+    public void setDriftListener(Consumer<DriftEvent> listener) {
         this.driftListener = listener;
     }
 
@@ -209,7 +178,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return out;
     }
 
-    // --- ensemble construction ------------------------------------------------------------------
 
     private void buildEnsemble() {
         ensemble = new BaseLearner[ensembleSize];
@@ -263,7 +231,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return out;
     }
 
-    // --- training ------------------------------------------------------------------------------
 
     @Override public void train(Instance full, int classLabel) { train(full, classLabel, false, Set.of()); }
 
@@ -283,16 +250,13 @@ public class NativeDriftAwareSRP implements ModelWrapper {
             }
             handleIntrinsicDrift(i, yhat == classLabel ? 0 : 1);
         }
-        // Component A: external, feature-driven KEEP/SURGICAL/FULL pass.
         if (driftAlarm) {
             double[] scores = resolveScores();
-            if (scores != null) {
-                DriftActionSummary s = handleDrift(drifting, scores);
-                autoHandleDriftCalls++;
-                if (driftListener != null) {
-                    driftListener.accept(new DriftAwareSRP.DriftEvent(instanceCounter, true, drifting, s,
-                            importance == null ? null : importance.getImportance(), null));
-                }
+            DriftActionSummary s = handleDrift(drifting, scores);
+            autoHandleDriftCalls++;
+            if (driftListener != null) {
+                driftListener.accept(new DriftEvent(instanceCounter, true, drifting, s,
+                        importance == null ? null : importance.getImportance(), null));
             }
         }
     }
@@ -327,19 +291,15 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return null;
     }
 
-    // --- drift-aware feature adaptation (component A/B) -----------------------------------------
 
     public DriftActionSummary handleDrift(Set<Integer> driftingOriginal, double[] scoresOriginal) {
-        if (scoresOriginal == null || scoresOriginal.length != origDim) {
-            lastSummary = new DriftActionSummary(ensembleSize);
-            return lastSummary;
-        }
+        boolean hasScores = scoresOriginal != null && scoresOriginal.length == origDim;
         if (driftingOriginal == null || driftingOriginal.isEmpty()) {
-            if (unlocalizedFallbackFraction > 0.0) return handleUnlocalized(scoresOriginal);
+            if (unlocalizedFallbackFraction > 0.0) return handleUnlocalized(hasScores ? scoresOriginal : null);
             lastSummary = new DriftActionSummary(ensembleSize);
             return lastSummary;
         }
-        Set<Integer> unstable = lowImportanceDrifting(driftingOriginal, scoresOriginal);
+        Set<Integer> unstable = hasScores ? lowImportanceDrifting(driftingOriginal, scoresOriginal) : driftingOriginal;
         boolean[] mask = new boolean[origDim];
         for (int idx : unstable) if (idx >= 0 && idx < origDim) mask[idx] = true;
 
@@ -353,7 +313,7 @@ public class NativeDriftAwareSRP implements ModelWrapper {
             if (overlap == 0) {
                 summary.record(li, DriftActionSummary.Action.KEEP, 0, sub.length, 0);
             } else if (frac < tau) {
-                int[] result = surgicalReplace(sub, scoresOriginal, mask);
+                int[] result = hasScores ? surgicalReplace(sub, scoresOriginal, mask) : surgicalReplaceUniform(sub, mask);
                 int swaps = countDifferences(result, sub);
                 if (swaps == 0) {
                     summary.record(li, DriftActionSummary.Action.NO_REPLACEMENT, overlap, sub.length, 0);
@@ -381,17 +341,22 @@ public class NativeDriftAwareSRP implements ModelWrapper {
 
     private DriftActionSummary handleUnlocalized(double[] scores) {
         DriftActionSummary summary = new DriftActionSummary(ensembleSize);
-        double[] subScore = new double[ensembleSize];
-        Arrays.fill(subScore, Double.POSITIVE_INFINITY);
-        for (int li = 0; li < ensembleSize; li++) {
-            int[] sub = ensemble[li].subspace;
-            if (sub.length == 0) { summary.record(li, DriftActionSummary.Action.KEEP, 0, 0, 0); continue; }
-            double s = 0; int c = 0;
-            for (int f : sub) if (f >= 0 && f < origDim && Double.isFinite(scores[f])) { s += scores[f]; c++; }
-            subScore[li] = (c == 0) ? Double.POSITIVE_INFINITY : s / c;
-        }
         int target = Math.max(1, Math.min(ensembleSize, (int) Math.ceil(ensembleSize * unlocalizedFallbackFraction)));
-        boolean[] refresh = lowestScored(subScore, target);
+        boolean[] refresh;
+        if (scores != null) {
+            double[] subScore = new double[ensembleSize];
+            Arrays.fill(subScore, Double.POSITIVE_INFINITY);
+            for (int li = 0; li < ensembleSize; li++) {
+                int[] sub = ensemble[li].subspace;
+                if (sub.length == 0) continue;
+                double s = 0; int c = 0;
+                for (int f : sub) if (f >= 0 && f < origDim && Double.isFinite(scores[f])) { s += scores[f]; c++; }
+                subScore[li] = (c == 0) ? Double.POSITIVE_INFINITY : s / c;
+            }
+            refresh = lowestScored(subScore, target);
+        } else {
+            refresh = uniformlyChosen(ensembleSize, target);
+        }
         for (int li = 0; li < ensembleSize; li++) {
             int[] sub = ensemble[li].subspace;
             if (sub.length == 0 || !refresh[li]) {
@@ -410,7 +375,15 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return summary;
     }
 
-    /** Keep the trained tree; only re-point projection to the new (same-length) subspace. */
+    private boolean[] uniformlyChosen(int n, int k) {
+        int[] idx = new int[n];
+        for (int i = 0; i < n; i++) idx[i] = i;
+        shuffleInPlace(idx);
+        boolean[] chosen = new boolean[n];
+        for (int i = 0; i < Math.min(k, n); i++) chosen[idx[i]] = true;
+        return chosen;
+    }
+
     private void rebuildSubspace(int li, int[] newSub) {
         BaseLearner bl = ensemble[li];
         bl.subspace = newSub;
@@ -463,6 +436,42 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return repl >= cur * surgicalReplacementTolerance;
     }
 
+    private int[] surgicalReplaceUniform(int[] currentSub, boolean[] driftingMask) {
+        boolean[] inSub = new boolean[origDim];
+        for (int s : currentSub) if (s >= 0 && s < origDim) inSub[s] = true;
+        int candCount = 0;
+        for (int i = 0; i < origDim; i++) if (!inSub[i] && !driftingMask[i]) candCount++;
+        if (candCount == 0) return currentSub.clone();
+        int[] cand = new int[candCount];
+        int j = 0;
+        for (int i = 0; i < origDim; i++) if (!inSub[i] && !driftingMask[i]) cand[j++] = i;
+        shuffleInPlace(cand);
+
+        int[] driftPos = new int[currentSub.length];
+        int dpc = 0;
+        for (int i = 0; i < currentSub.length; i++) {
+            int s = currentSub[i];
+            if (s >= 0 && s < origDim && driftingMask[s]) driftPos[dpc++] = i;
+        }
+        int[] sortedPos = Arrays.copyOf(driftPos, dpc);
+        shuffleInPlace(sortedPos);
+
+        int[] result = currentSub.clone();
+        int ci = 0;
+        for (int p = 0; p < sortedPos.length && ci < cand.length; p++) {
+            result[sortedPos[p]] = cand[ci];
+            ci++;
+        }
+        return result;
+    }
+
+    private void shuffleInPlace(int[] a) {
+        for (int i = a.length - 1; i > 0; i--) {
+            int k = rng.nextInt(i + 1);
+            int tmp = a[i]; a[i] = a[k]; a[k] = tmp;
+        }
+    }
+
     private Set<Integer> lowImportanceDrifting(Set<Integer> drifting, double[] scores) {
         if (drifting == null || drifting.isEmpty()) return Set.of();
         double threshold = finiteQuantile(scores, unstableImportanceQuantile);
@@ -475,7 +484,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return out;
     }
 
-    // --- prediction (component C: blend toward top-K importance-weighted correction) ------------
 
     @Override
     public double[] predictProba(Instance full) {
@@ -485,7 +493,7 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         if (impOrig == null || !isAllFinite(impOrig) || !hasAnyPositive(impOrig)) {
             unweightedFallbacks++; return base;
         }
-        // Per-learner subspace importance, rank, take top-K rank-weighted vote.
+        // Per-learner subspace importance, rank, take top-K rank-weighted
         double[] raw = new double[ensembleSize];
         int positive = 0;
         for (int li = 0; li < ensembleSize; li++) {
@@ -536,7 +544,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return blended;
     }
 
-    /** Plain ensemble vote. If topN>0, only the topN learners by recent accuracy are aggregated. */
     private double[] ensembleVote(Instance full, int topN) {
         double[] agg = new double[numClasses];
         double wSum = 0;
@@ -578,7 +585,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return best;
     }
 
-    // --- ModelWrapper misc ---------------------------------------------------------------------
 
     @Override
     public int[] getCurrentSelection() {
@@ -591,10 +597,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return out;
     }
 
-    /**
-     * Sum over every live patch: each foreground learner plus any pending background learner
-     * (a background tree is real, resident memory and must be charged to the model).
-     */
     @Override
     public long modelByteSize() {
         long total = 0L;
@@ -628,7 +630,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
                 + ", tau=" + tau + ", topK=" + topKFraction + ", alpha=" + correctionAlpha + ")";
     }
 
-    // --- shared helpers ------------------------------------------------------------------------
 
     private static double[] sharpenAndBlend(double[] base, double power, double beta) {
         int n = base.length;
@@ -715,7 +716,6 @@ public class NativeDriftAwareSRP implements ModelWrapper {
         return k - 1;
     }
 
-    // --- per-learner state (SRP patch: projected tree + ADWIN + explicit subspace) --------------
 
     private static final class BaseLearner {
         int[] subspace;

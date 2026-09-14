@@ -40,7 +40,6 @@ public class AlarmTriggeredSelector implements FeatureSelector {
     @Getter private long updatesBeforeInit;
 
     private EventListener listener;
-    /** Set to "drift_alarm" once a post-alarm re-selection completes; see FeatureSelector. */
     private String lastSelectionTrigger = "initial";
 
     @Override

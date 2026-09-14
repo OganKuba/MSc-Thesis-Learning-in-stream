@@ -21,27 +21,33 @@ def table_detector_kappa(summary: pd.DataFrame):
     pv = block_utils.metric_pivot(BLOCK, summary, "kappa_mean", index="variant", columns="dataset")
     block_utils.write_metric_table(
         "tab_e5_kappa", pv,
-        caption=r"E5 detectors: mean $\kappa$ per (variant, dataset). Bold = best per row.",
+        caption=(r"E5 detectors: mean $\kappa$ per (variant, dataset). "
+                 r"Bold = best variant per dataset (column)."),
         label="tab:e5_kappa",
+        bold_max_per_row=False, bold_max_per_col=True,
     )
 
     pv_acc = block_utils.metric_pivot(BLOCK, summary, "accuracy_mean", index="variant", columns="dataset")
     block_utils.write_metric_table(
         "tab_e5_accuracy", pv_acc,
-        caption="E5 detectors: mean accuracy per (variant, dataset).",
+        caption=("E5 detectors: mean accuracy per (variant, dataset). "
+                 "Bold = best variant per dataset (column)."),
         label="tab:e5_accuracy",
+        bold_max_per_row=False, bold_max_per_col=True,
     )
 
     pv_tk = block_utils.metric_pivot(BLOCK, summary, "kappa_temporal_windowed_mean", index="variant", columns="dataset")
     block_utils.write_metric_table(
         "tab_e5_temporal_kappa", pv_tk,
-        caption=r"E5 detectors: temporal $\kappa$ averaged over all evaluation windows, per (variant, dataset).",
+        caption=(r"E5 detectors: temporal $\kappa$ averaged over all evaluation windows, per "
+                 r"(variant, dataset). Bold = best variant per dataset (column)."),
         label="tab:e5_temporal_kappa",
+        bold_max_per_row=False, bold_max_per_col=True,
     )
 
 
 def table_detector_ranking(summary: pd.DataFrame):
-    """Aggregate across datasets/seeds per detector (using detector column)."""
+    """Aggregate across datasets/seeds per detector (using detector."""
     if summary is None or len(summary) == 0:
         return
     sub = summary[summary.model == "DA-ARF"] if "model" in summary.columns else summary
@@ -186,8 +192,6 @@ def plot_adaptation_timeline(events: pd.DataFrame):
 
 def write_stat_tables(stat_tests: dict):
     block_utils.friedman_table(BLOCK, stat_tests)
-    # Only the metrics the thesis actually cites; previously every STAT_METRICS entry got
-    # its own avg_ranks table (6 per block = 30 unused files).
     for metric in config.RANK_TABLE_METRICS:
         block_utils.per_metric_rank_table(BLOCK, stat_tests, metric)
     for metric in ["kappa", "recovery_time", "kappa_temporal"]:
@@ -205,6 +209,9 @@ def run():
         return
     table_detector_kappa(summary)
     table_detector_ranking(summary)
+    block_utils.resource_table(
+        BLOCK, summary, "tab_e5_resources", "tab:e5_resources",
+        "E5 detector comparison")
     plot_kappa_heatmap(summary)
     plot_detector_alarms_vs_kappa(summary)
     plot_recovery_vs_kappa(summary)

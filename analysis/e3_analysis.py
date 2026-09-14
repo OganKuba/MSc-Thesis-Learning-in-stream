@@ -32,21 +32,42 @@ def table_ablation(summary: pd.DataFrame):
             cells.append(txt)
         body_lines.append(" & ".join(cells) + " \\\\")
 
+    mean_row = pv.mean(axis=0, skipna=True)
+    mean_arr = np.array(mean_row.values, dtype=float)
+    mean_max_idx = -1 if np.all(np.isnan(mean_arr)) else int(np.nanargmax(mean_arr))
+    mean_cells = ["Mean"]
+    for j, v in enumerate(mean_row):
+        txt = "-" if pd.isna(v) else f"{v:.3f}"
+        if j == mean_max_idx:
+            txt = r"\textbf{" + txt + "}"
+        mean_cells.append(txt)
+    body_lines.append("\\midrule")
+    body_lines.append(" & ".join(mean_cells) + " \\\\")
+
     body_lines.append("\\bottomrule")
     body_lines.append("\\end{tabular}")
     latex_tables.write_table(
         "tab_e3_ablation", "\n".join(body_lines),
-        caption=r"E3 DA-SRP / DA-ARF ablation: mean $\kappa$ per (dataset, variant). Bold = best per row.",
+        caption=(r"E3 DA-SRP / DA-ARF ablation: mean $\kappa$ per (dataset, variant), with a "
+                 r"Mean row averaging across the eight datasets. Bold = best per row."),
         label="tab:e3_ablation",
     )
 
     delta_rows = []
     def add_delta(label: str, col: str, ref_col: str):
-        if col in pv.columns and ref_col in pv.columns:
-            delta_rows.append({
-                "Comparison": label,
-                "mean_delta_kappa": (pv[col] - pv[ref_col]).mean(),
-            })
+        if col not in pv.columns or ref_col not in pv.columns:
+            return
+        diff = (pv[col] - pv[ref_col]).dropna()
+        if diff.empty:
+            return
+        delta_rows.append({
+            "Comparison": label,
+            "mean": diff.mean(),
+            "median": diff.median(),
+            "std": diff.std(),
+            "wins": f"{int((diff > 0).sum())}/{len(diff)}",
+            "worst": diff.min(),
+        })
 
     add_delta(r"SRP+S1 vs SRP", SRP_S1_BASELINE, SRP_RAW_BASELINE)
     add_delta(r"DA-SRP-A vs SRP", "DA-SRP-A", SRP_RAW_BASELINE)
@@ -67,7 +88,14 @@ def table_ablation(summary: pd.DataFrame):
         body = latex_tables.df_to_booktabs(deltas, ndigits=3, index_name="Comparison")
         latex_tables.write_table(
             "tab_e3_ablation_deltas", body,
-            caption=r"E3 ablation summary: mean $\Delta\kappa$ against raw and feature-selection baselines.",
+            caption=(r"E3 ablation summary: $\Delta\kappa$ against the raw and the "
+                     r"feature-selection baseline, summarised over the "
+                     + str(len(pv.index)) + r" datasets. \emph{wins} counts datasets with "
+                     r"$\Delta\kappa>0$ and \emph{worst} is the largest loss on any single "
+                     r"dataset. Read \emph{median} and \emph{wins} as the headline: "
+                     r"$\Delta\kappa$ is not commensurable across streams of different "
+                     r"difficulty, and with 8 datasets a single one can dominate the mean "
+                     r"(SEA alone accounts for the whole positive mean of DA-SRP-AB vs SRP)."),
             label="tab:e3_ablation_deltas",
         )
 
@@ -152,7 +180,7 @@ def plot_action_counts_bar(events: pd.DataFrame):
 
 
 def plot_importance_evolution(feat_imp: pd.DataFrame):
-    """Per dataset, follow the top-5 features' rank over time for one DA variant."""
+    """Per dataset, follow the top-5 features' rank over time for one DA."""
     if feat_imp is None or len(feat_imp) == 0:
         return
     plot_utils.setup_style()
@@ -174,13 +202,17 @@ def plot_importance_evolution(feat_imp: pd.DataFrame):
         top_feats = (sub.groupby("feature_index").importance.mean()
                      .sort_values(ascending=False).head(5).index.tolist())
         sub = sub[sub.feature_index.isin(top_feats)]
+        feature_names = plot_utils.arff_attribute_names(ds)
         fig, ax = plt.subplots(figsize=(11, 4.5))
         drift_marked = False
         for i, f in enumerate(top_feats):
             fs = sub[sub.feature_index == f].sort_values("instance_index")
-            ax.plot(fs.instance_index, fs.importance, label=f"feat {f}",
+            if feature_names is not None and f < len(feature_names):
+                label = feature_names[f]
+            else:
+                label = f"feat {f}"
+            ax.plot(fs.instance_index, fs.importance, label=label,
                     linewidth=1.0, color=f"C{i}")
-            # C4: mark instances where this feature is flagged drifting (per-feature KSWIN).
             if has_drift_flag:
                 dr = fs[pd.to_numeric(fs.is_drifting, errors="coerce").fillna(0) > 0]
                 if not dr.empty:
@@ -226,8 +258,7 @@ def plot_selection_timeline(feat_sel: pd.DataFrame):
 
 
 def plot_learner_view(events: pd.DataFrame):
-    """Per-learner DA-SRP views. Silently skipped on adaptation_events.csv written before the
-    per_learner_* columns existed — re-run the E3 block to populate them."""
+    """Per-learner DA-SRP views. Silently skipped on adaptation_events.csv."""
     block_utils.plot_learner_lanes(
         BLOCK, events,
         fname_prefix="e3_learner_lanes", subdir="e3_timelines",
@@ -278,8 +309,6 @@ def plot_drift_alarms(drift_alarms: pd.DataFrame):
 
 def write_stat_tables(stat_tests: dict):
     block_utils.friedman_table(BLOCK, stat_tests)
-    # Only the metrics the thesis actually cites; previously every STAT_METRICS entry got
-    # its own avg_ranks table (6 per block = 30 unused files).
     for metric in config.RANK_TABLE_METRICS:
         block_utils.per_metric_rank_table(BLOCK, stat_tests, metric)
     for metric in ["kappa", "kappa_temporal", "recovery_time"]:
@@ -297,6 +326,9 @@ def run():
         return
     table_ablation(summary)
     table_adaptation_actions(data["adaptation_events"])
+    block_utils.resource_table(
+        BLOCK, summary, "tab_e3_resources", "tab:e3_resources",
+        "E3 DA-SRP / DA-ARF ablation")
     plot_ablation_bar(summary)
     plot_temporal_kappa_bar(summary)
     plot_action_proportions(data["adaptation_events"])

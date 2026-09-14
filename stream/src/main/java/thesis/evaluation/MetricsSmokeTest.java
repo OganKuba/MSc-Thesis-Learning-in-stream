@@ -211,7 +211,6 @@ public class MetricsSmokeTest {
                         && Math.abs(r.getPeakMB() - 150.0) < 1e-6);
     }
 
-    // --- model-size RAM-Hours path (replaces whole-JVM sampling) -------------------------------
 
     private static void testRamHoursModelSizeAccumulates() {
         RAMHours r = new RAMHours();

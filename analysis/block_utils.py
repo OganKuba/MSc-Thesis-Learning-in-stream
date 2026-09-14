@@ -1,4 +1,4 @@
-"""Shared helpers for per-block (E1..E5) analyses against the unified runner output."""
+"""Shared helpers for per-block (E1..E5) analyses against the unified."""
 from __future__ import annotations
 
 import numpy as np
@@ -11,7 +11,7 @@ import seaborn as sns
 from . import config, latex_tables, loaders, plot_utils
 
 
-# --- Ordering ------------------------------------------------------------
+# Ordering
 
 def ordered_datasets(df, col="dataset"):
     if df is None or col not in df.columns:
@@ -22,15 +22,7 @@ def ordered_datasets(df, col="dataset"):
 
 
 def per_dataset_targets(block: str, df, col="dataset"):
-    """
-    Datasets for which a per-dataset figure should be produced.
-
-    The five generators that emit one file per dataset (window timeseries, alarm timeline,
-    adaptation timeline, selection timeline, noise-annotated importance) previously iterated over
-    every dataset in the block, which is where most of the unused output came from. They now ask
-    here instead; the whitelist lives in config.PER_DATASET_FIGURES and mirrors what the thesis
-    cites. A block missing from the config keeps the old behaviour (all datasets).
-    """
+    """Datasets for which a per-dataset figure should be produced."""
     present = ordered_datasets(df, col=col)
     wanted = config.PER_DATASET_FIGURES.get(block)
     if wanted is None:
@@ -47,15 +39,11 @@ def ordered_variants(block: str, df, col="variant"):
     return present + extras
 
 
-# --- Summary pivots ------------------------------------------------------
+# Summary pivots
 
 def drop_saturated(block: str, df: pd.DataFrame, metric_col: str,
                    dataset_col: str = "dataset") -> pd.DataFrame:
-    """Drop datasets that are saturated (kappa/accuracy ~1.0) for this block/metric (B3).
-
-    Only affects kappa/accuracy on E1/E2/E3 (removes generic STAGGER); a no-op for
-    every other metric, block, and for temporal_kappa / high-dynamics blocks.
-    """
+    """Drop datasets that are saturated (kappa/accuracy ~1.0) for this."""
     if df is None or dataset_col not in df.columns:
         return df
     if metric_col not in config.SATURATED_METRICS:
@@ -68,7 +56,7 @@ def drop_saturated(block: str, df: pd.DataFrame, metric_col: str,
 
 def metric_pivot(block: str, summary: pd.DataFrame, metric_col: str,
                  index="dataset", columns="variant") -> pd.DataFrame:
-    """Pivot a summary CSV (long form) on dataset x variant for any *_mean metric."""
+    """Pivot a summary CSV (long form) on dataset x variant for any *_mean."""
     summary = drop_saturated(block, summary, metric_col)
     rows = ordered_datasets(summary, index) if index == "dataset" else ordered_variants(block, summary, index)
     cols = ordered_variants(block, summary, columns) if columns == "variant" else ordered_datasets(summary, columns)
@@ -79,7 +67,7 @@ def metric_pivot(block: str, summary: pd.DataFrame, metric_col: str,
     return pv
 
 
-# --- Window helpers ------------------------------------------------------
+# Window helpers
 
 def aggregate_windows(window: pd.DataFrame, metric: str = "accuracy",
                       group_keys=("dataset", "variant", "window_id"),
@@ -95,38 +83,105 @@ def aggregate_windows(window: pd.DataFrame, metric: str = "accuracy",
     return agg.sort_values(keys)
 
 
-# --- LaTeX writers -------------------------------------------------------
+# LaTeX writers
 
 def write_metric_table(name: str, pv: pd.DataFrame, caption: str, label: str,
-                       ndigits: int = 3, bold_max_per_row: bool = True):
+                       ndigits: int = 3, bold_max_per_row: bool = True,
+                       bold_max_per_col: bool = False):
     if pv is None or pv.empty:
         return
     body = latex_tables.df_to_booktabs(
         pv, ndigits=ndigits, bold_max_per_row=bold_max_per_row,
+        bold_max_per_col=bold_max_per_col,
         index_name=pv.index.name or "",
     )
     latex_tables.write_table(name, body, caption=caption, label=label)
 
 
-# --- Common plots --------------------------------------------------------
+def resource_table(block: str, summary: pd.DataFrame, name: str, label: str,
+                   block_title: str):
+    """Cost side of a block: accuracy against memory and speed, one row."""
+    if summary is None or summary.empty or "ram_hours_gb_mean" not in summary.columns:
+        return
+    df = summary.copy()
+    if "instances_mean" not in df.columns:
+        return
+    inst = pd.to_numeric(df.instances_mean, errors="coerce")
+    df["_ramh_norm"] = (pd.to_numeric(df.ram_hours_gb_mean, errors="coerce") / inst
+                        * 1e5 * config.RAMH_SCALE)
+    variants = ordered_variants(block, df)
+    agg = df.groupby("variant").agg(
+        kappa=("kappa_mean", "mean"),
+        ramh=("_ramh_norm", "mean"),
+        peak_mb=("peak_mb_mean", "mean"),
+        throughput=("throughput_mean", "mean"),
+    ).reindex([v for v in variants if v in df.variant.unique()])
+    if agg.empty:
+        return
+    out = pd.DataFrame({
+        "kappa": agg.kappa,
+        "RAMh/100k": agg.ramh,
+        "peak MB": agg.peak_mb,
+        "inst/s": agg.throughput.map(lambda x: "-" if pd.isna(x) else f"{x:.0f}"),
+    })
+    out.index.name = "Variant"
+    body = latex_tables.df_to_booktabs(out, ndigits=3, index_name="Variant")
+    latex_tables.write_table(
+        name, body,
+        caption=(block_title + r": accuracy against cost, averaged over the block's datasets. "
+                 r"\emph{RAMh/100k} is RAM-Hours in " + config.RAMH_UNIT_TEX +
+                 r" normalised to a 100k-instance stream (the raw metric integrates memory over "
+                 r"time, so unnormalised it would mostly reflect how long each stream is); "
+                 r"\emph{peak MB} is the deep size of the learner, which needs no normalisation."),
+        label=label,
+    )
+
+
+# Common plots
 
 def plot_metric_bar(block: str, summary: pd.DataFrame, metric_col: str,
                     fname: str, ylabel: str, title: str, subdir: str | None = None):
+    """Grouped bars per (dataset, variant), with +/- 1 SD over seeds where."""
     if summary is None or metric_col not in summary.columns:
         return
     plot_utils.setup_style()
     df = drop_saturated(block, summary, metric_col).copy()
-    df["dataset"] = pd.Categorical(df.dataset, categories=ordered_datasets(df), ordered=True)
-    df["variant"] = pd.Categorical(df.variant, categories=ordered_variants(block, df), ordered=True)
+    datasets = ordered_datasets(df)
+    variants = ordered_variants(block, df)
+    df["dataset"] = pd.Categorical(df.dataset, categories=datasets, ordered=True)
+    df["variant"] = pd.Categorical(df.variant, categories=variants, ordered=True)
     fig, ax = plt.subplots(figsize=(11, 5))
     sns.barplot(data=df, x="dataset", y=metric_col, hue="variant", ax=ax, errorbar=None)
+    _add_sd_whiskers(ax, df, metric_col, datasets, variants)
     ax.set_xlabel("Dataset")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     plt.setp(ax.get_xticklabels(), rotation=25, ha="right")
-    plot_utils.legend_below(ax, ncol=2, title="Variant")
     fig.tight_layout()
+    plot_utils.legend_below(ax, ncol=2, title="Variant")
     plot_utils.save_fig(fig, fname, subdir=subdir)
+
+
+def _add_sd_whiskers(ax, df: pd.DataFrame, metric_col: str, datasets, variants):
+    """Draw +/- 1 SD whiskers on an existing grouped barplot, read from."""
+    std_col = metric_col.replace("_mean", "_std")
+    if not metric_col.endswith("_mean") or std_col not in df.columns:
+        return
+    std_pv = df.pivot_table(index="variant", columns="dataset", values=std_col, observed=False)
+    # One container per hue level, in the order of the variant categories.
+    for container, variant in zip(ax.containers, variants):
+        if variant not in std_pv.index:
+            continue
+        for patch, dataset in zip(container.patches, datasets):
+            if dataset not in std_pv.columns:
+                continue
+            sd = std_pv.loc[variant, dataset]
+            height = patch.get_height()
+            if not np.isfinite(sd) or sd <= 0 or not np.isfinite(height):
+                continue
+            ax.errorbar(patch.get_x() + patch.get_width() / 2.0, height, yerr=sd,
+                        fmt="none", ecolor="black", elinewidth=0.7, capsize=1.6,
+                        capthick=0.7, alpha=0.65, zorder=5)
 
 
 def plot_window_timeseries(block: str, window: pd.DataFrame, metric: str,
@@ -148,12 +203,14 @@ def plot_window_timeseries(block: str, window: pd.DataFrame, metric: str,
             best = sub.groupby("variant")[metric].mean().sort_values(ascending=False).head(top_n).index
             variants = [v for v in variants if v in best]
         fig, ax = plt.subplots(figsize=(11, 4.5))
-        for v in variants:
+        linestyles = ["-", "--", "-.", ":"]
+        for i, v in enumerate(variants):
             vd = sub[sub.variant == v]
             agg = vd.groupby("end_instance", as_index=False)[metric].mean().sort_values("end_instance")
             if agg.empty:
                 continue
-            ax.plot(agg.end_instance, agg[metric], label=v, linewidth=1.2)
+            ax.plot(agg.end_instance, agg[metric], label=v, linewidth=1.2,
+                    linestyle=linestyles[i % len(linestyles)])
         drift_pts = drift_points_map.get(ds)
         plot_utils.add_drift_lines(ax, drift_pts)
         plot_utils.annotate_continuous(ax, drift_pts)
@@ -165,7 +222,7 @@ def plot_window_timeseries(block: str, window: pd.DataFrame, metric: str,
         plot_utils.save_fig(fig, f"{fname_prefix}_{ds}", subdir=subdir)
 
 
-# --- Drift alarms --------------------------------------------------------
+# Drift alarms
 
 def alarms_per_run(drift_alarms: pd.DataFrame) -> pd.DataFrame:
     """Mean alarm count per (dataset, variant), averaged across seeds."""
@@ -192,44 +249,24 @@ def plot_alarm_counts(block: str, drift_alarms: pd.DataFrame, fname: str,
     )
     fig, ax = plt.subplots(figsize=(11, 5.4))
     sns.barplot(data=counts, x="dataset", y="alarm_count", hue="variant", ax=ax, errorbar=None)
-    # Log scale, because the counts span three orders of magnitude: a degenerate baseline can
-    # fire >1000 times on a real stream (Majority/NYCTaxi = 1329) while a learner on a
-    # synthetic stream fires 5. On a linear axis shared by all datasets the synthetic bars are
-    # 0.4% of the plot height — they render as a flat line at zero and the figure reads as
-    # "no drift was ever detected on the synthetic data", which is not what happened.
     positive = counts.alarm_count[counts.alarm_count > 0]
     if not positive.empty:
         ax.set_yscale("log")
-        # Bars are drawn from 0, which has no place on a log axis; matplotlib clips them at the
-        # lower limit, so put that limit just under the smallest real value instead of letting
-        # it default to something that swallows the shortest bar.
         ax.set_ylim(bottom=max(float(positive.min()) * 0.6, 1e-3))
     ax.set_xlabel("Dataset")
     ax.set_ylabel("Mean alarms per run (log scale)")
     ax.set_title(title)
     plt.setp(ax.get_xticklabels(), rotation=25, ha="right")
-    # Further down than the default: the rotated dataset names plus the x-label need the room,
-    # and at -0.24 the legend box sat on top of "Dataset".
-    plot_utils.legend_below(ax, ncol=2, title="Variant", y=-0.34)
     fig.tight_layout()
+    plot_utils.legend_below(ax, ncol=2, title="Variant")
     plot_utils.save_fig(fig, fname, subdir=subdir)
 
 
-# An alarm is called "useful" when the window accuracy one window later is at least this much
-# higher than the window accuracy at alarm time. 1pp is above the noise floor of a
-# 1000-instance window (~0.3pp s.e. at acc 0.9) without demanding a dramatic recovery.
 ALARM_USEFUL_DELTA = 0.01
 
 
 def alarm_delta(drift_alarms: pd.DataFrame) -> pd.DataFrame:
-    """Add `delta_acc` = accuracy one window AFTER the alarm minus accuracy AT the alarm.
-
-    Both columns come from RunDetailedRecorder, which back-fills `window_accuracy_after`
-    once `windowSize` further instances have been seen. The difference is what the alarm
-    actually bought: ~0 means the detector fired without anything improving (a false alarm,
-    or an adaptation that did not pay off), clearly positive means the reset recovered
-    accuracy. Returns an empty frame when the columns are absent.
-    """
+    """Add `delta_acc` = accuracy one window AFTER the alarm minus."""
     need = {"window_accuracy_before", "window_accuracy_after"}
     if drift_alarms is None or drift_alarms.empty or not need.issubset(drift_alarms.columns):
         return pd.DataFrame()
@@ -241,15 +278,7 @@ def alarm_delta(drift_alarms: pd.DataFrame) -> pd.DataFrame:
 
 def plot_alarm_timeline(block: str, drift_alarms: pd.DataFrame, fname_prefix: str,
                         subdir: str, drift_points_map: dict, title_prefix: str | None = None):
-    """One subplot per variant: every alarm as a stem whose height is the accuracy it recovered.
-
-    The old version drew each alarm as a bare vertical line, which said only "the detector
-    fired here" — information the aggregate e*_drift_alarm_counts already carries. Here the
-    stem height is `delta_acc` (see alarm_delta), so a detector that fires constantly without
-    recovering anything shows up as a flat row of ticks on the zero line, while a detector
-    whose alarms precede a real recovery shows tall green stems. Markers sit on the zero line
-    too, so alarm timing stays visible whatever the height.
-    """
+    """One subplot per variant: every alarm as a stem whose height is the."""
     if config.figure_disabled("alarm_timeline", block):
         return
     df = alarm_delta(drift_alarms)
@@ -269,18 +298,21 @@ def plot_alarm_timeline(block: str, drift_alarms: pd.DataFrame, fname_prefix: st
         gt = drift_points_map.get(ds)
         lim = float(np.nanmax(np.abs(sub.delta_acc.values))) if len(sub) else 0.0
         lim = max(lim, 0.01) * 1.15
-        fig, axes = plt.subplots(len(variants), 1, figsize=(11, 1.5 * len(variants) + 1.2),
+        fig, axes = plt.subplots(len(variants), 1, figsize=(11, 1.05 * len(variants) + 1.0),
                                  sharex=True, sharey=True, squeeze=False)
         axes = axes[:, 0]
         for ax, v in zip(axes, variants):
             vd = sub[sub.variant == v].sort_values("instance_index")
             x = vd.instance_index.values
             d = vd.delta_acc.values
-            colors = np.where(d >= ALARM_USEFUL_DELTA, "C2",
-                              np.where(d <= -ALARM_USEFUL_DELTA, "C3", "0.6"))
-            ax.vlines(x, 0.0, d, colors=colors, linewidth=1.0, alpha=0.85)
-            ax.scatter(x, np.zeros_like(d), s=6, color="C0", zorder=3, edgecolor="none")
-            ax.axhline(0.0, color="black", linewidth=0.6, alpha=0.5)
+            # Literal colours (not C2/C3 cycle indices, which shift meaning whenever
+            # config.PALETTE is reordered): green = useful, orange = harmful, grey = neutral.
+            colors = np.where(d >= ALARM_USEFUL_DELTA, "#1a9850",
+                              np.where(d <= -ALARM_USEFUL_DELTA, "#d55e00", "0.6"))
+            ax.vlines(x, 0.0, d, colors=colors, linewidth=1.8, alpha=0.95)
+            ax.scatter(x, np.zeros_like(d), s=16, color="#0173b2", zorder=3,
+                       edgecolor="white", linewidth=0.4)
+            ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
             ax.set_ylim(-lim, lim)
             ax.set_ylabel(f"{v}\n" + r"$\Delta$acc", fontsize=8)
             plot_utils.add_drift_lines(ax, gt)
@@ -295,13 +327,7 @@ def plot_alarm_timeline(block: str, drift_alarms: pd.DataFrame, fname_prefix: st
 
 def plot_alarm_effectiveness(block: str, drift_alarms: pd.DataFrame, fname: str,
                              title: str, subdir: str | None = None):
-    """Aggregate companion to plot_alarm_timeline: distribution of delta_acc per variant.
-
-    Pools every alarm of every dataset and seed. The box shows how much accuracy an alarm
-    typically recovers; the number above it is the share of alarms that recovered at least
-    ALARM_USEFUL_DELTA. A detector sitting on 0 with a low percentage is paying the cost of
-    an adaptation for nothing.
-    """
+    """Aggregate companion to plot_alarm_timeline: distribution of."""
     df = alarm_delta(drift_alarms)
     if df.empty:
         return
@@ -315,9 +341,7 @@ def plot_alarm_effectiveness(block: str, drift_alarms: pd.DataFrame, fname: str,
     sns.stripplot(data=df, x="variant", y="delta_acc", ax=ax, size=2.2,
                   alpha=0.35, color="C0", jitter=0.28)
     ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
-    ax.axhline(ALARM_USEFUL_DELTA, color="C2", linewidth=0.8, linestyle=":", alpha=0.8)
-    # Headroom for the per-variant labels, which sit inside the axes so they cannot collide
-    # with the title (x in data coords, y in axes coords).
+    ax.axhline(ALARM_USEFUL_DELTA, color="#1a9850", linewidth=0.8, linestyle=":", alpha=0.8)
     lo, hi = ax.get_ylim()
     ax.set_ylim(lo, hi + 0.22 * (hi - lo))
     label_tf = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
@@ -338,7 +362,7 @@ def plot_alarm_effectiveness(block: str, drift_alarms: pd.DataFrame, fname: str,
 
 def alarm_effectiveness_table(block: str, drift_alarms: pd.DataFrame, name: str,
                               caption: str, label: str):
-    """Quantitative anchor for plot_alarm_effectiveness, per (variant, detector)."""
+    """Quantitative anchor for plot_alarm_effectiveness, per (variant."""
     df = alarm_delta(drift_alarms)
     if df.empty:
         return
@@ -363,16 +387,10 @@ def alarm_effectiveness_table(block: str, drift_alarms: pd.DataFrame, name: str,
     latex_tables.write_table(name, body, caption=caption, label=label)
 
 
-# --- Recovery time -------------------------------------------------------
+# Recovery time
 
 def recovery_table(block: str, recovery: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate per-drift recovery stats per (dataset, variant).
-
-    `recovery_length` is kept for backward compatibility but is degenerate
-    (≈1 window everywhere: the recovery fits inside one 1000-instance window).
-    The informative columns are `mean_max_drop` (how far accuracy fell after a
-    drift) and `mean_area` (area under the recovery curve = drop × duration).
-    """
+    """Aggregate per-drift recovery stats per (dataset, variant)."""
     if recovery is None or len(recovery) == 0:
         return pd.DataFrame()
     recovery = recovery.copy()
@@ -389,7 +407,7 @@ def recovery_table(block: str, recovery: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
-# Recovery depth metrics we prefer over the degenerate recovery_length (B1).
+# Recovery depth metrics we prefer over the degenerate
 RECOVERY_METRICS = [
     ("mean_max_drop", "Mean max accuracy drop after drift"),
     ("mean_area", "Mean area under recovery curve"),
@@ -398,11 +416,7 @@ RECOVERY_METRICS = [
 
 def plot_recovery(block: str, recovery: pd.DataFrame, fname: str, title: str,
                   subdir: str | None = None):
-    """Recovery *depth* per (dataset, variant): max accuracy drop + area under curve.
-
-    Replaces the old single-panel recovery-length bar (which was ~1.0 for every
-    variant and carried no signal).
-    """
+    """Recovery *depth* per (dataset, variant): max accuracy drop + area."""
     agg = recovery_table(block, recovery)
     if agg.empty:
         return
@@ -427,7 +441,7 @@ def plot_recovery(block: str, recovery: pd.DataFrame, fname: str, title: str,
     plot_utils.save_fig(fig, fname, subdir=subdir)
 
 
-# --- Feature selections --------------------------------------------------
+# Feature selections
 
 def feature_selection_summary(feat_sel: pd.DataFrame) -> pd.DataFrame:
     if feat_sel is None or len(feat_sel) == 0:
@@ -442,11 +456,7 @@ def feature_selection_summary(feat_sel: pd.DataFrame) -> pd.DataFrame:
 
 
 def is_static_selection(feat_sel: pd.DataFrame) -> bool:
-    """True when the selection never actually changes (only 'initial' triggers).
-
-    In such blocks (E1, and the static baselines in E4/E5) stability≡1.0 and the
-    selected-count is constant, so the overview panels carry no signal (B2).
-    """
+    """True when the selection never actually changes (only 'initial'."""
     if feat_sel is None or len(feat_sel) == 0 or "trigger_type" not in feat_sel.columns:
         return True
     return set(feat_sel.trigger_type.unique()) <= {"initial"}
@@ -484,7 +494,7 @@ def plot_feature_selection_overview(block: str, feat_sel: pd.DataFrame, fname: s
     plot_utils.save_fig(fig, fname, subdir=subdir)
 
 
-# --- Feature importance --------------------------------------------------
+# Feature importance
 
 def importance_top_features(feat_imp: pd.DataFrame, top_k: int = 10,
                              dataset: str | None = None,
@@ -508,27 +518,7 @@ def importance_top_features(feat_imp: pd.DataFrame, top_k: int = 10,
 
 def plot_importance_heatmap(block: str, feat_imp: pd.DataFrame, fname: str,
                             title: str, subdir: str | None = None):
-    """Feature importance per (dataset, feature index), with the injected noise features marked.
-
-    Replaces an earlier version that pivoted variant x feature_index and pooled every dataset
-    into one mean. That version was uninterpretable for four independent reasons:
-
-    1. Feature index *i* denotes a different variable in every stream (SEA has 8 features,
-       YahooFinance 36), so averaging across datasets adds unlike quantities.
-    2. Importance is normalised to sum to 1 per snapshot, so its scale is ~1/d. Low-dimensional
-       datasets (SEA: 1/8) automatically outweighed high-dimensional ones (YahooFinance: 1/36).
-    3. Snapshots are alarm-triggered, so the pooled mean was weighted by alarm frequency —
-       NYCTaxi contributed 1955 snapshots against LED's 33.
-    4. The variant axis carried no information: the importance estimator is fed the stream, not
-       the model. At a given instance every variant reports bit-identical importance, including
-       Majority and NoChange, which do not learn at all. Row-to-row differences were purely an
-       artefact of each variant having a different number of alarm-triggered snapshots.
-
-    Cells are therefore reported **relative to the uniform baseline** (importance * d, so 1.0
-    means "carries exactly its share"), which is comparable across streams of different width.
-    Values are pooled over variants, seeds and snapshots, which is legitimate precisely because
-    of point 4. A dataset that has no feature *i* leaves the cell blank.
-    """
+    """Feature importance per (dataset, feature index), with the injected."""
     if feat_imp is None or len(feat_imp) == 0:
         return
     plot_utils.setup_style()
@@ -542,7 +532,7 @@ def plot_importance_heatmap(block: str, feat_imp: pd.DataFrame, fname: str,
             continue
         width = int(sub.feature_index.max()) + 1
         mean_imp = sub.groupby("feature_index").importance.mean()
-        # importance * d: 1.0 = the feature carries exactly a uniform share of the total.
+        # importance * d: 1.0 = the feature carries exactly a uniform share
         rows[ds] = mean_imp.reindex(range(width)) * width
         idx = noise_feature_indices(ds, width)
         if idx:
@@ -553,9 +543,6 @@ def plot_importance_heatmap(block: str, feat_imp: pd.DataFrame, fname: str,
 
     n_col = pv.shape[1]
     fig, ax = plt.subplots(figsize=(min(16, 0.42 * n_col + 4.5), 0.5 * len(pv.index) + 2.4))
-    # Asymmetric diverging scale pinned at the uniform share: 0 -> blue, 1.0 -> white,
-    # top -> red. The upper end is clipped at the 98th percentile because a single feature can
-    # reach 4x uniform (YahooFinance/20) and would otherwise wash out every other cell.
     vmax = float(np.nanquantile(pv.values, 0.98))
     vmax = max(vmax, 1.2)
     norm = mcolors.TwoSlopeNorm(vmin=0.0, vcenter=1.0, vmax=vmax)
@@ -564,8 +551,6 @@ def plot_importance_heatmap(block: str, feat_imp: pd.DataFrame, fname: str,
                 linewidths=0.4, linecolor="white",
                 cbar_kws={"label": "importance relative to uniform (1.0 = 1/d)",
                           "extend": "max"})
-    # Outline the injected-noise block of each stream: the claim these figures support is that
-    # the ranker pushes importance away from it, and the range differs per dataset.
     for y, ds in enumerate(pv.index):
         span = noise_spans.get(ds)
         if span is None:
@@ -583,12 +568,7 @@ def plot_importance_heatmap(block: str, feat_imp: pd.DataFrame, fname: str,
 
 
 def noise_feature_indices(dataset: str, total_features: int) -> list[int]:
-    """Indices of the injected noise features for a synthetic dataset (B4).
-
-    Noise columns are appended last, so they are the final `NOISE_FEATURES[ds]`
-    indices of the `total_features`-wide space. Returns [] when the dataset has
-    no known noise ground truth (real ARFFs, STAGGER, noise-free variants).
-    """
+    """Indices of the injected noise features for a synthetic dataset (B4)."""
     n = config.NOISE_FEATURES.get(dataset, 0)
     if n <= 0 or total_features <= 0:
         return []
@@ -599,13 +579,7 @@ def noise_feature_indices(dataset: str, total_features: int) -> list[int]:
 def plot_importance_noise_annotated(block: str, feat_imp: pd.DataFrame,
                                     fname_prefix: str, subdir: str,
                                     title_prefix: str | None = None):
-    """Per-synthetic-dataset importance heatmap (variant × feature) with the
-    injected noise features highlighted (B4).
-
-    One figure per dataset that has a known noise ground truth; noise columns get
-    red tick labels and a hatched overlay so it is visible whether the adaptive
-    selectors push importance/selection away from the noise features.
-    """
+    """Per-synthetic-dataset importance heatmap (variant x feature) with."""
     if feat_imp is None or len(feat_imp) == 0:
         return
     if config.figure_disabled("importance_noise", block):
@@ -649,7 +623,7 @@ def plot_importance_noise_annotated(block: str, feat_imp: pd.DataFrame,
         plot_utils.save_fig(fig, f"{fname_prefix}_{ds}", subdir=subdir)
 
 
-# --- Adaptation events ---------------------------------------------------
+# Adaptation events
 
 def adaptation_summary(events: pd.DataFrame) -> pd.DataFrame:
     if events is None or len(events) == 0:
@@ -657,7 +631,9 @@ def adaptation_summary(events: pd.DataFrame) -> pd.DataFrame:
     cols = ["kept_count", "surgical_count", "full_replacement_count",
             "no_replacement_count", "ext_keep_count", "ext_full_count"]
     cols = [c for c in cols if c in events.columns]
-    agg = (events.groupby(["dataset", "variant"], as_index=False)[cols].sum())
+    grouped = events.groupby(["dataset", "variant"], as_index=False)
+    agg = grouped[cols].sum()
+    agg["n_events"] = grouped.size()["size"].values
     return agg
 
 
@@ -686,8 +662,9 @@ def plot_adaptation_stacked(block: str, events: pd.DataFrame, fname: str,
     axes = axes[0]
     palette = sns.color_palette(config.PALETTE, n_colors=len(cats))
     for ax, v in zip(axes, variants):
-        vd = agg[agg.variant == v].set_index("dataset").reindex(datasets)
-        vd = vd[cats].fillna(0)
+        vd_all = agg[agg.variant == v].set_index("dataset").reindex(datasets)
+        n_events = vd_all["n_events"].fillna(0) if "n_events" in vd_all.columns else None
+        vd = vd_all[cats].fillna(0)
         totals = vd.sum(axis=1).replace(0, np.nan)
         prop = vd.div(totals, axis=0).fillna(0)
         bottom = np.zeros(len(prop))
@@ -695,7 +672,17 @@ def plot_adaptation_stacked(block: str, events: pd.DataFrame, fname: str,
             ax.bar(prop.index.astype(str), prop[c].values, bottom=bottom,
                    label=labels[c], color=color)
             bottom += prop[c].values
-        ax.set_title(v)
+        if n_events is not None:
+            tf = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+            for xi, ds in enumerate(datasets):
+                n = int(n_events.get(ds, 0))
+                if n == 0:
+                    ax.text(xi, 0.5, "no\nevents", ha="center", va="center", fontsize=7,
+                            color="0.35", style="italic", transform=tf)
+                ax.text(xi, 1.015, f"n={n}", ha="center", va="bottom", fontsize=6.5,
+                        color="0.35", transform=tf)
+        ax.set_ylim(0, 1.0)
+        ax.set_title(v, pad=18)
         ax.set_ylabel("Proportion")
         plt.setp(ax.get_xticklabels(), rotation=25, ha="right")
     plot_utils.figure_legend(fig, axes, ncol=min(6, len(cats)), y=0.91)
@@ -704,9 +691,9 @@ def plot_adaptation_stacked(block: str, events: pd.DataFrame, fname: str,
     plot_utils.save_fig(fig, fname, subdir=subdir)
 
 
-# --- Time-resolved diagnostics (C1-C4) -----------------------------------
+# Time-resolved diagnostics (C1-C4)
 
-# Per-learner adaptation action columns and their display labels / colours.
+# Per-learner adaptation action columns and their display labels /
 _ACTION_COLS = ["kept_count", "surgical_count", "full_replacement_count",
                 "no_replacement_count", "ext_keep_count", "ext_full_count"]
 _ACTION_LABEL = {
@@ -732,12 +719,7 @@ def _da_variants_with_events(block, events):
 def plot_adaptation_timeline(block: str, events: pd.DataFrame, fname_prefix: str,
                              subdir: str, drift_points_map: dict,
                              title_prefix: str | None = None):
-    """C1: per-event KEEP/SURGICAL/FULL/... on the instance axis (not summed).
-
-    One figure per dataset, one subplot per DA variant. Each adaptation event is a
-    marker placed at its `instance_index` in the lane of every action it performed
-    (marker area ~ how many learners took that action). GT drifts are dashed lines.
-    """
+    """C1: per-event KEEP/SURGICAL/FULL/... on the instance axis (not."""
     if events is None or len(events) == 0:
         return
     plot_utils.setup_style()
@@ -782,25 +764,16 @@ def plot_adaptation_timeline(block: str, events: pd.DataFrame, fname_prefix: str
         plot_utils.save_fig(fig, f"{fname_prefix}_{ds}", subdir=subdir)
 
 
-# --- Per-learner view of DA-SRP adaptations ------------------------------
+# Per-learner view of DA-SRP adaptations
 
 # Letters written by RunDetailedRecorder.encodeActions.
 _LEARNER_ACTION_LABEL = {"K": "KEEP", "S": "SURGICAL", "F": "FULL", "N": "NO_REPL"}
-# Explicit hexes, not the C0..C3 cycle: in the colorblind palette SURGICAL and FULL both came
-# out orange, and telling a targeted swap from a full reset is the entire point of the figure.
-# Blue / vermillion / pink are separable for the common colour-vision deficiencies.
 _LEARNER_ACTION_COLOR = {"K": "0.78", "S": "#0173B2", "F": "#D55E00", "N": "#CC78BC"}
 _PER_LEARNER_COLS = ["per_learner_action", "per_learner_overlap", "per_learner_subspace"]
 
 
 def explode_per_learner(events: pd.DataFrame) -> pd.DataFrame:
-    """Long form of the pipe-encoded per-learner columns: one row per (event, learner).
-
-    Columns added: `learner`, `action` (letter), `overlap` (drifting features inside that
-    learner's subspace), `subspace` (its size). Returns an empty frame when the columns are
-    missing, which is the case for every CSV produced before those columns were added — the
-    callers then simply skip the figure instead of failing.
-    """
+    """Long form of the pipe-encoded per-learner columns: one row per."""
     if events is None or events.empty or "per_learner_action" not in events.columns:
         return pd.DataFrame()
     sub = events[events.per_learner_action.notna() & (events.per_learner_action != "")]
@@ -829,15 +802,7 @@ def explode_per_learner(events: pd.DataFrame) -> pd.DataFrame:
 def plot_learner_lanes(block: str, events: pd.DataFrame, fname_prefix: str, subdir: str,
                        drift_points_map: dict, title_prefix: str | None = None,
                        max_variants: int = 3):
-    """Per-learner adaptation raster for DA-SRP: which ensemble member did what, and why.
-
-    Left column: one lane per ensemble member, a marker at every adaptation event coloured by
-    the action that member took. Right column: the same grid coloured by `overlap` — how many
-    of the features that had just drifted were inside that member's random subspace. Reading
-    the two side by side answers the question the aggregate counts cannot: a surgical swap
-    should land exactly on the members whose subspace contains a drifting feature, and the
-    members with overlap 0 should be left alone.
-    """
+    """Per-learner adaptation raster for DA-SRP: which ensemble member did."""
     long = explode_per_learner(events)
     if long.empty:
         return
@@ -893,13 +858,7 @@ def plot_learner_lanes(block: str, events: pd.DataFrame, fname_prefix: str, subd
 
 def plot_action_vs_overlap(block: str, events: pd.DataFrame, fname: str, title: str,
                            subdir: str | None = None):
-    """Aggregate counterpart to plot_learner_lanes: action taken vs subspace overlap.
-
-    Pools every (event, learner) pair over datasets and seeds and shows, per variant, how the
-    action distribution changes with the number of drifting features inside the learner's
-    subspace. This is the quantitative form of the component-B claim: overlap 0 should be
-    dominated by KEEP, and the SURGICAL share should rise with the overlap.
-    """
+    """Aggregate counterpart to plot_learner_lanes: action taken vs."""
     long = explode_per_learner(events)
     if long.empty or long.overlap.isna().all():
         return
@@ -936,12 +895,7 @@ def plot_action_vs_overlap(block: str, events: pd.DataFrame, fname: str, title: 
 def plot_selection_timeline(block: str, feat_sel: pd.DataFrame, fname_prefix: str,
                             subdir: str, drift_points_map: dict,
                             variant_filter=None, title_prefix: str | None = None):
-    """C2: indices of the currently-selected features over time, per variant.
-
-    Generalises the E2 selection timeline: works for any variant list (e.g.
-    DA-SRP-ABC in E3), draws GT drift lines and shades the injected-noise region so
-    one can see whether the selector keeps drifting into / out of noise features.
-    """
+    """C2: indices of the currently-selected features over time, per."""
     if feat_sel is None or len(feat_sel) == 0:
         return
     plot_utils.setup_style()
@@ -992,13 +946,7 @@ def plot_causality_overlay(block: str, windows: pd.DataFrame,
                            drift_alarms: pd.DataFrame, events: pd.DataFrame,
                            dataset: str, variant: str, drift_points_map: dict,
                            fname: str, subdir: str, title_prefix: str | None = None):
-    """C3: alarm -> action -> kappa recovery on a shared instance axis.
-
-    Top panel: window kappa for `variant` (mean over seeds) with GT drift lines and
-    detector alarms as vertical marks. Bottom panel: adaptation actions raster for
-    one seed. Reads windows + drift_alarms + adaptation_events; shows the causal
-    chain detector-fires -> ensemble-adapts -> accuracy-recovers.
-    """
+    """C3: alarm -> action -> kappa recovery on a shared instance axis."""
     if windows is None or windows.empty:
         return
     wsub = windows[(windows.dataset == dataset) & (windows.variant == variant)]
@@ -1048,7 +996,7 @@ def plot_causality_overlay(block: str, windows: pd.DataFrame,
     plot_utils.save_fig(fig, fname, subdir=subdir)
 
 
-# --- Statistical tests ---------------------------------------------------
+# Statistical tests
 
 def friedman_table(block: str, stat_tests: dict):
     if not stat_tests:
@@ -1128,7 +1076,7 @@ def nemenyi_table(block: str, stat_tests: dict, metric: str = "kappa"):
 
 
 def export_cd_diagrams(block: str, stat_tests: dict, subdir: str = "stat_tests"):
-    """Copy pre-rendered CD diagrams (svg) into the figures dir for the block."""
+    """Copy pre-rendered CD diagrams (svg) into the figures dir for the."""
     if not stat_tests:
         return
     import shutil

@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# Compile + run the full experiment suite (E1-E5) with the project's JDK 17 and the
-# jars already cached in ~/.m2. Written for this machine (no system maven / JDK 17 on PATH).
-#
-# Usage:
-#   bash stream/run_experiments.sh                 # compile + run all blocks -> stream/results/
-#   bash stream/run_experiments.sh /path/cfg.json  # run a custom config instead
-#
-# After it finishes, regenerate the figures/tables:
-#   analysis/.venv/bin/python -m analysis
 set -euo pipefail
 
 STREAM_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,8 +15,6 @@ CP="$CP:$M2/com/fasterxml/jackson/core/jackson-databind/2.17.2/jackson-databind-
 CP="$CP:$M2/com/fasterxml/jackson/core/jackson-core/2.17.2/jackson-core-2.17.2.jar"
 CP="$CP:$M2/com/fasterxml/jackson/core/jackson-annotations/2.17.0/jackson-annotations-2.17.0.jar"
 LOMBOK="$M2/org/projectlombok/lombok/1.18.30/lombok-1.18.30.jar"
-# RAM-Hours measures the MODEL's deep size via MOA's measureByteSize(), which needs this java
-# agent. Without it every measurement returns -1 and ram_hours_gb/peak_mb come out NaN.
 SIZEOF_AGENT="$M2/com/github/fracpete/sizeofag/1.1.0/sizeofag-1.1.0.jar"
 if [[ ! -f "$SIZEOF_AGENT" ]]; then
   echo "[run] ERROR: sizeof agent not found at $SIZEOF_AGENT" >&2

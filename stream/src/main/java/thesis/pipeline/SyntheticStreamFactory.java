@@ -43,21 +43,12 @@ public final class SyntheticStreamFactory {
         return limit(s1234, numInstances);
     }
 
-    /**
-     * High-frequency SEA variant. Cycles through SEA functions 1→2→3→4→1… across
-     * {@code numDrifts} abrupt change-points distributed evenly over {@code numInstances}.
-     * For {@code numDrifts}=10 and {@code numInstances}=100_000 this yields a drift every 10k instances.
-     */
     public static InstanceStream createMultiDriftSEA(int seed, int numInstances, int numDrifts) {
         return buildCyclicAbruptStream(seed, numInstances, numDrifts,
                 /*numFunctions=*/4, /*tag=*/"SEA",
                 (s, fn) -> newSEA(s, fn));
     }
 
-    /**
-     * High-frequency STAGGER variant. Cycles through STAGGER functions 1→2→3→1… across
-     * {@code numDrifts} abrupt change-points distributed evenly over {@code numInstances}.
-     */
     public static InstanceStream createMultiDriftSTAGGER(int seed, int numInstances, int numDrifts) {
         return buildCyclicAbruptStream(seed, numInstances, numDrifts,
                 /*numFunctions=*/3, /*tag=*/"STAGGER",
@@ -159,13 +150,6 @@ public final class SyntheticStreamFactory {
         return s;
     }
 
-    /**
-     * LED with gradual drift — a natural feature-selection benchmark: 7 relevant segment
-     * attributes + 17 irrelevant (noise) attributes (24 total, 10 classes). {@code numDriftAttrs}
-     * of the 7 relevant attributes gradually drift. Not saturated (~74% Bayes-optimal at 10%
-     * noise), so it discriminates methods, and the 17 irrelevant attributes let us show whether
-     * the selector actually avoids noise.
-     */
     public static InstanceStream createLEDDrift(int seed, int numDriftAttrs, int numInstances) {
         if (numDriftAttrs < 0 || numDriftAttrs > 7) {
             throw new IllegalArgumentException("numDriftAttrs must be in [0,7] (LED has 7 relevant attributes)");
@@ -174,7 +158,7 @@ public final class SyntheticStreamFactory {
         g.instanceRandomSeedOption.setValue(seed);
         g.numberAttributesDriftOption.setValue(numDriftAttrs);
         g.noisePercentageOption.setValue(10);
-        // suppressIrrelevantAttributesOption left OFF: keep the 17 irrelevant attributes.
+        // suppressIrrelevantAttributesOption left OFF: keep the 17 irrelevant
         g.prepareForUse();
         return limit(g, numInstances);
     }

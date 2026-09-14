@@ -10,12 +10,6 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
-/**
- * Measures the actual per-tree subspace diversity of a DA-ARF ensemble: how many
- * of the F features the 10 trees cover (union) and the mean pairwise Jaccard overlap,
- * for the ⌈√F⌉ ("narrow") vs 0.75·F ("wide") subspace budgets. Confirms the
- * diversity/individual-strength trade-off discussed in section A6b.
- */
 public class DAARFDiversityProbe {
 
     public static void main(String[] args) {

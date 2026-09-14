@@ -11,12 +11,6 @@ import java.util.ArrayList;
 import java.util.Random;
 import java.util.Set;
 
-/**
- * Smoke tests for the section-A DA-ARF repair paths: external SURGICAL mode (A2),
- * double-reset gating (A3), and intrinsic-drift-off (A4). Focus: the surgical path
- * rebuilds a learner's reduced header and keeps the trained tree — verify it neither
- * throws nor corrupts prediction after subsequent training.
- */
 public class DAARFRepairSmokeTest {
 
     private static int passed = 0;
@@ -87,7 +81,7 @@ public class DAARFRepairSmokeTest {
             Instance in = inst(h, rng, y);
             da.train(in, y[0]);
         }
-        // Drift alarms with several overlapping, low-importance drifting features.
+        // Drift alarms with several overlapping, low-importance drifting
         Set<Integer> drifting = Set.of(0, 1, 2, 3, 4, 5, 6, 7);
         for (int a = 0; a < alarms; a++) {
             for (int i = 0; i < 50; i++) {
@@ -149,7 +143,6 @@ public class DAARFRepairSmokeTest {
         else { failed++; System.out.println("  [FAIL] " + name); }
     }
 
-    /** Minimal initialized selector — DA-ARF routes the full space, selector is interface-only. */
     private static final class IdentitySelector implements FeatureSelector {
         private final int[] sel;
         IdentitySelector() { sel = new int[F]; for (int i = 0; i < F; i++) sel[i] = i; }

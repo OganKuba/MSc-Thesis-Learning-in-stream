@@ -1,4 +1,6 @@
 from __future__ import annotations
+import re
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,34 +15,30 @@ def table_comparison(summary: pd.DataFrame):
     pv = block_utils.metric_pivot(BLOCK, summary, "kappa_mean", index="variant", columns="dataset")
     block_utils.write_metric_table(
         "tab_e2_kappa", pv,
-        caption=r"E2 adaptive feature selection: mean $\kappa$ per (variant, dataset). Bold = best per row.",
+        caption=(r"E2 adaptive feature selection: mean $\kappa$ per (variant, dataset). "
+                 r"Bold = best variant per dataset (column)."),
         label="tab:e2_kappa",
+        bold_max_per_row=False, bold_max_per_col=True,
     )
 
     pv_acc = block_utils.metric_pivot(BLOCK, summary, "accuracy_mean", index="variant", columns="dataset")
     block_utils.write_metric_table(
         "tab_e2_accuracy", pv_acc,
-        caption="E2 adaptive feature selection: mean accuracy per (variant, dataset).",
+        caption=("E2 adaptive feature selection: mean accuracy per (variant, dataset). "
+                 "Bold = best variant per dataset (column)."),
         label="tab:e2_accuracy",
+        bold_max_per_row=False, bold_max_per_col=True,
     )
 
     pv_tk = block_utils.metric_pivot(BLOCK, summary, "kappa_temporal_windowed_mean", index="variant", columns="dataset")
     block_utils.write_metric_table(
         "tab_e2_temporal_kappa", pv_tk,
-        caption=r"E2: temporal $\kappa$ averaged over all evaluation windows, per (variant, dataset).",
+        caption=(r"E2: temporal $\kappa$ averaged over all evaluation windows, per "
+                 r"(variant, dataset). Bold = best variant per dataset (column)."),
         label="tab:e2_temporal_kappa",
+        bold_max_per_row=False, bold_max_per_col=True,
     )
 
-    # Delta vs the same-model RAW baseline (no feature selection).
-    #
-    # This used to be measured against S1, which had two problems. The S1 rows themselves came
-    # out as a row of structural zeros, and — more importantly — S1 is the weakest possible
-    # reference: it is catastrophically bad on Hyperplane (kappa 0.193 against raw ARF's 0.712),
-    # so an adaptive selector scored "+0.559" there while only 0.040 of that was the benefit of
-    # adaptivity and the remaining 0.518 was merely undoing the damage of the static subset.
-    # E1 established that the raw model is the strongest baseline, so that is what a selector
-    # has to beat to be worth its cost. Delta versus S1 stays recoverable as
-    # (row - S1 row) within each model block.
     if "model" not in summary.columns:
         return
     raw_lookup = (summary[summary.selector.isna() | (summary.selector == "NONE")]
@@ -57,7 +55,6 @@ def table_comparison(summary: pd.DataFrame):
     if not rows:
         return
     delta_df = pd.DataFrame(rows).pivot(index="variant", columns="dataset", values="delta")
-    # Drop the reference rows: their delta is zero by construction and carries no information.
     keep = [v for v in block_utils.ordered_variants(BLOCK, summary)
             if v in delta_df.index and not (delta_df.loc[v].abs() < 1e-12).all()]
     delta_df = delta_df.reindex(index=keep, columns=block_utils.ordered_datasets(summary))
@@ -122,31 +119,40 @@ def plot_kappa_heatmap(summary: pd.DataFrame):
 
 
 def plot_adaptive_vs_static(summary: pd.DataFrame):
+    """Best static vs best adaptive selection per dataset, against the."""
     pv = block_utils.metric_pivot(BLOCK, summary, "kappa_mean", index="variant", columns="dataset")
     if pv.empty:
         return
     plot_utils.setup_style()
     s1_rows = [v for v in pv.index if v.endswith("S1")]
-    if not s1_rows:
+    adaptive_rows = [v for v in pv.index if re.search(r"\+S[234]$", v)]
+    raw_rows = [v for v in pv.index if not re.search(r"\+S\d$", v)]
+    if not s1_rows or not adaptive_rows:
         return
-    fig, ax = plt.subplots(figsize=(10, 5))
     datasets = list(pv.columns)
     x = np.arange(len(datasets))
     s1_best = pv.loc[s1_rows].max(axis=0)
-    adaptive_rows = [v for v in pv.index if pd.Series([v]).str.contains(r"\+S[234]$", regex=True).iloc[0]]
-    if not adaptive_rows:
-        return
     adaptive = pv.loc[adaptive_rows].max(axis=0)
-    ax.scatter(x, s1_best, color="grey", marker="o", s=80, label="best S1 (static)")
-    ax.scatter(x, adaptive, color="C2", marker="^", s=80, label="best adaptive (S2/S3/S4)")
+
+    fig, ax = plt.subplots(figsize=(10, 5.4))
+    if raw_rows:
+        raw_best = pv.loc[raw_rows].max(axis=0)
+        ax.scatter(x, raw_best, color="C3", marker="_", s=420, linewidth=2.4, zorder=4,
+                   label="no selection (raw ARF/SRP)")
+        for xi, ds in enumerate(datasets):
+            ax.plot([xi - 0.28, xi + 0.28], [raw_best[ds]] * 2, color="C3",
+                    alpha=0.25, linewidth=1.0, zorder=1)
+    ax.scatter(x, s1_best, color="grey", marker="o", s=80, zorder=3, label="best S1 (static)")
+    ax.scatter(x, adaptive, color="C2", marker="^", s=90, zorder=3,
+               label="best adaptive (S2/S3/S4)")
     for xi, ds in enumerate(datasets):
-        ax.plot([xi, xi], [s1_best[ds], adaptive[ds]], color="black", alpha=0.3)
+        ax.plot([xi, xi], [s1_best[ds], adaptive[ds]], color="black", alpha=0.3, zorder=2)
     ax.set_xticks(x)
     ax.set_xticklabels(datasets, rotation=25, ha="right")
     ax.set_ylabel(r"Best $\kappa$")
-    ax.set_title("E2: Static (S1) vs Adaptive (S2/S3/S4) — best-of per dataset")
-    plot_utils.short_legend(ax)
+    ax.set_title("E2: no selection vs static (S1) vs adaptive (S2/S3/S4) — best-of per dataset")
     fig.tight_layout()
+    plot_utils.legend_below(ax, ncol=3)
     plot_utils.save_fig(fig, "e2_adaptive_vs_static")
 
 
@@ -172,7 +178,7 @@ def plot_feature_importance(feat_imp: pd.DataFrame):
 
 
 def plot_selection_timeline(feat_sel: pd.DataFrame):
-    """Per (variant, dataset, seed=1) plot the indices of selected features over time."""
+    """Per (variant, dataset, seed=1) plot the indices of selected."""
     if feat_sel is None or len(feat_sel) == 0:
         return
     plot_utils.setup_style()
@@ -241,8 +247,6 @@ def plot_recovery(recovery: pd.DataFrame):
 
 def write_stat_tables(stat_tests: dict):
     block_utils.friedman_table(BLOCK, stat_tests)
-    # Only the metrics the thesis actually cites; previously every STAT_METRICS entry got
-    # its own avg_ranks table (6 per block = 30 unused files).
     for metric in config.RANK_TABLE_METRICS:
         block_utils.per_metric_rank_table(BLOCK, stat_tests, metric)
     block_utils.nemenyi_table(BLOCK, stat_tests, metric="kappa")
@@ -260,6 +264,9 @@ def run():
     table_comparison(summary)
     table_stability(summary)
     table_drift_response(summary)
+    block_utils.resource_table(
+        BLOCK, summary, "tab_e2_resources", "tab:e2_resources",
+        "E2 adaptive feature selection")
     plot_kappa_heatmap(summary)
     plot_adaptive_vs_static(summary)
     plot_feature_selection(data["feature_selections"])

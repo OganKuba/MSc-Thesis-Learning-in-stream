@@ -1,3 +1,39 @@
+# bledy.md — audyt wyników (12 punktów)
+
+> ## ✅ STATUS NA 2026-08-28 — WSZYSTKIE PUNKTY KRYTYCZNE I POWAŻNE SĄ ZAMKNIĘTE
+>
+> Ten dokument opisuje stan **sprzed** naprawy. Zostaje jako zapis audytu i uzasadnienie zmian,
+> ale **żaden z punktów 1–5 nie obowiązuje już dla obecnych wyników** w `stream/results/`.
+> Weryfikacja wykonana bezpośrednio na kodzie i CSV-kach:
+>
+> | pkt | problem | status | dowód |
+> |---|---|---|---|
+> | 1 | seed nieprzekazywany do ARF/SRP/HT | **naprawione** | `ARFWrapper.newARF()` woła `setRandomSeed(seed)` przed `prepareForUse()`; std ≠ 0 na zbiorach ARFF |
+> | 2 | RAM-h / peak\_mb mierzą całą JVM | **naprawione** | `MetricsCollector.sampleRam()` → `RAMHours.sampleModelSize(model.modelByteSize())`; `sampleFromRuntime()` jest `@Deprecated` i nieosiągalne w przebiegach |
+> | 3 | `recovery_time` zdegenerowany | **naprawione / obejście** | metryka liczona dwufazowo z 4 kategoriami wyniku; do wniosków używany `recovery_max_drop` (jedyny istotny) |
+> | 4 | `temporal_kappa` w 100% NaN | **naprawione** | kolumna `kappa_temporal` w `windows.csv` ma realne wartości |
+> | 5 | dwie definicje `throughput` | **naprawione** | rozdzielone na `throughput` (pełny krok prequential) i `predict_latency_us` (sama inferencja) |
+> | 6 | Level-2 prawie nic nie lokalizuje w E2 | **nie jest bugiem — ograniczenie metody** | 91.6% alarmów bez wskazanej cechy; opisane w planie rozdziału jako ograniczenie |
+> | 7 | 14 konfiguracji z `drift_count = 0` | **nie jest bugiem — wynik** | nadal 14; to własność pary (model, strumień), patrz §1 wniosek 6 w `PLAN_ROZDZIALU_WYNIKI.md` |
+> | 8 | nasycenie STAGGER | **rozwiązane przez zmianę składu** | STAGGER usunięty z E1/E2/E3/E4, został tylko `STAGGER-HiDyn` w E5 |
+> | 9 | bałagan w `results/` | **rozwiązane** | jeden przebieg, budżet artefaktów ograniczony do 63 tabel + 87 figur |
+> | 10, 11 | NHTS / YahooFinance | **nie są bugami — wyniki do opisania** | mają własne akapity w planie rozdziału (§1 wnioski 3 i 4) |
+> | 12 | drobne | **naprawione** | patrz commity |
+>
+> **Punkty znalezione później (2026-08-28/29), już naprawione:**
+>
+> | problem | status | dowód |
+> |---|---|---|
+> | `HDDM_W` niedeterministyczny przy 12 wątkach — MOA trzyma liczniki w polach `static` | **naprawione** | przebiegi z HDDM_W serializowane (`SHARED_DETECTOR_LOCK`); 12 wątków daje 5/5 powtarzalnych, wcześniej 0/5. Liczba alarmów 30 → **77** |
+> | `feature_selections.csv` zapisywał wybór selektora, nie modelu → metryki selekcji DA zdegenerowane | **naprawione** | recorder dostaje `model.getCurrentSelection()`; DA mają teraz stabilność 0.98 i 24.7 cech zamiast 1.000 i 5 |
+> | etykieta `initial` nadawana dwa razy na przebieg | **naprawione** | E3: 75 wierszy `initial` przy 40 przebiegach → dokładnie 40 |
+> | dwa smoke testy failowały na nieaktualnych kontraktach | **naprawione** | `bash stream/run_smoke_tests.sh` → 237/237 |
+>
+> **Uwaga:** liczby cytowane w treści poniżej (np. `NYCTaxi/ARF κ = 0.782667 ×5`) pochodzą
+> z przebiegu sprzed naprawy i **nie zgadzają się** z obecnymi wynikami. Nie cytuj ich w pracy.
+
+---
+
 🔴 Krytyczne
 
 1. Seed nie jest propagowany do ARF / SRP / HT — 5 „seedów" to 5 ident

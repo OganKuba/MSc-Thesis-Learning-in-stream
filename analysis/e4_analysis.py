@@ -177,8 +177,6 @@ def plot_adaptation_timeline(events: pd.DataFrame):
 
 def write_stat_tables(stat_tests: dict):
     block_utils.friedman_table(BLOCK, stat_tests)
-    # Only the metrics the thesis actually cites; previously every STAT_METRICS entry got
-    # its own avg_ranks table (6 per block = 30 unused files).
     for metric in config.RANK_TABLE_METRICS:
         block_utils.per_metric_rank_table(BLOCK, stat_tests, metric)
     for metric in ["kappa", "recovery_time", "kappa_temporal"]:
@@ -197,6 +195,9 @@ def run():
     table_high_dynamics(summary)
     table_dynamics_sensitivity(summary)
     table_adaptation_actions(data["adaptation_events"])
+    block_utils.resource_table(
+        BLOCK, summary, "tab_e4_resources", "tab:e4_resources",
+        "E4 drift intensity")
     plot_kappa_by_dynamics(summary)
     plot_windows_kappa(data["windows"])
     plot_windows_accuracy(data["windows"])

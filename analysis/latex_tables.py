@@ -27,9 +27,6 @@ def _fmt_num(x, ndigits=3, dash="-"):
             return dash
         if isinstance(x, (int, np.integer)):
             return str(int(x))
-        # A nonzero value smaller than the last printed digit would round to "0.00…",
-        # which reads as "this model uses no memory at all". Fall back to scientific
-        # notation so tiny-but-real magnitudes (e.g. RAM-Hours ~1e-6) stay visible.
         if x != 0.0 and abs(x) < 0.5 * 10.0 ** (-ndigits):
             return f"{x:.1e}"
         return f"{x:.{ndigits}f}"
@@ -55,11 +52,20 @@ def write_table(name: str, body: str, caption: str, label: str, position: str = 
     print(f"  [tab] {path.relative_to(config.ROOT)}")
 
 
-def df_to_booktabs(df: pd.DataFrame, ndigits=3, bold_max_per_row=False, index_name=None) -> str:
+def df_to_booktabs(df: pd.DataFrame, ndigits=3, bold_max_per_row=False, index_name=None,
+                   bold_max_per_col=False) -> str:
+    """Booktabs table. Bolding marks the winner along one axis - pick the."""
     df = df.copy()
     if index_name is not None:
         df.index.name = index_name
+    if bold_max_per_row and bold_max_per_col:
+        raise ValueError("bold_max_per_row and bold_max_per_col are mutually exclusive")
     cols = list(df.columns)
+    col_max = {}
+    if bold_max_per_col:
+        for c in cols:
+            vals = pd.to_numeric(df[c], errors="coerce")
+            col_max[c] = None if vals.isna().all() else vals.idxmax()
     align = "l" + "c" * len(cols)
     lines = [f"\\begin{{tabular}}{{{align}}}", "\\toprule"]
     header_cells = [_escape(df.index.name or "")] + [_escape(c) for c in cols]
@@ -84,6 +90,8 @@ def df_to_booktabs(df: pd.DataFrame, ndigits=3, bold_max_per_row=False, index_na
         for j, v in enumerate(row):
             cell = _fmt_num(v, ndigits=ndigits)
             if j == max_idx and bold_max_per_row:
+                cell = _bold(cell)
+            elif bold_max_per_col and col_max.get(cols[j]) == idx:
                 cell = _bold(cell)
             cells.append(cell)
         lines.append(" & ".join(cells) + " \\\\")

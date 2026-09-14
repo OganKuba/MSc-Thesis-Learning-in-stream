@@ -33,6 +33,7 @@ public class AlarmTriggeredSelectorSmokeTest {
         testListenerEmitsAlarmAndReSelectionEvents();
         testNoOpIfWindowFedFullyButNoChangeInData();
         testTieBreakPreservesPreviousSelectionOnEqualScores();
+        testTieBreakStillDropsFeatureThatLostItsSignal();
         testDoubleInitializeRejected();
         testSoftResetKeepsDiscretizerReady();
         testRepeatedAlarmsBetweenWindowsAllAccepted();
@@ -325,7 +326,7 @@ public class AlarmTriggeredSelectorSmokeTest {
     private static void testTieBreakPreservesPreviousSelectionOnEqualScores() {
         int F = 4, K = 2, W = 200, N = 600;
         int[] y = new int[N];
-        double[][] win = makeWindow(N, F, 109, 0, y);
+        double[][] win = makeWindow(N, F, 109, -1, y);
         AlarmTriggeredSelector sel = buildSelector(F, K, W);
         sel.initialize(win, y);
         int[] before = sel.getSelectedFeatures();
@@ -343,6 +344,28 @@ public class AlarmTriggeredSelectorSmokeTest {
         report("on equal/noise scores, previous selection is preserved (before=" +
                         Arrays.toString(before) + ", after=" + Arrays.toString(after) + ")",
                 preserved && sel.getReSelections() == 1);
+    }
+
+    private static void testTieBreakStillDropsFeatureThatLostItsSignal() {
+        int F = 4, K = 2, W = 200, N = 600;
+        int[] y = new int[N];
+        double[][] win = makeWindow(N, F, 109, 0, y);
+        AlarmTriggeredSelector sel = buildSelector(F, K, W);
+        sel.initialize(win, y);
+        int[] before = sel.getSelectedFeatures();
+
+        Random rng = new Random(909);
+        boolean firstTick = true;
+        for (int i = 0; i < W + 10; i++) {
+            double[] x = new double[F];
+            for (int f = 0; f < F; f++) x[f] = rng.nextGaussian();
+            sel.update(x, rng.nextInt(2), firstTick, Collections.emptySet());
+            firstTick = false;
+        }
+        int[] after = sel.getSelectedFeatures();
+        report("a feature that loses all signal is dropped despite tie-break (before=" +
+                        Arrays.toString(before) + ", after=" + Arrays.toString(after) + ")",
+                contains(before, 0) && !contains(after, 0) && sel.getReSelections() == 1);
     }
 
     private static void testDoubleInitializeRejected() {

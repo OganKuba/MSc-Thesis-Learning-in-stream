@@ -1,15 +1,36 @@
 # EXPERIMENTS_DESCRIPTION.md — szczegółowy opis eksperymentów E1–E5
 
-> Dokument opisuje pięć runnerów eksperymentalnych zlokalizowanych w
-> `src/main/java/thesis/experiments/`. Każdy z nich zaczytuje swoją konfigurację
-> z pliku JSON sąsiadującego w tym samym folderze i zapisuje wyniki w `results/<EX>/`.
+> ## ⚠️ DOKUMENT HISTORYCZNY — NIE OPISUJE OBECNEGO KODU
 >
-> Eksperymenty (klasa → config → output dir):
-> - `E1Baselines`      → `E1_baselines.json` → `results/E1_baselines/`
-> - `E2AdaptiveFS`     → `E2_adaptive_fs.json` → `results/E2/`
-> - `E3DASRP`          → `e3_da_srp.json` → `results/E3/`
-> - `E4DriftAnalysis`  → `e4_synthetic_drift.json` → `results/E4/`
-> - `E5Detectors`      → `e5_detectors.json` → `results/E5/`
+> Ten plik opisuje **architekturę pięciu osobnych runnerów**, która **już nie istnieje**.
+> Żadna z klas `E1Baselines`, `E2AdaptiveFS`, `E3DASRP`, `E4DriftAnalysis`, `E5Detectors`
+> nie występuje w repozytorium, podobnie jak pliki `E1_baselines.json`, `e3_da_srp.json` itd.
+> Zostały zastąpione **jednym** runnerem i **jednym** configiem:
+>
+> - klasa: `thesis.experiments.UnifiedStreamExperimentRunner`
+> - config: `src/main/java/thesis/experiments/master_experiments.json` (bloki `E1`…`E5`)
+> - wyjście: `stream/results/E{1..5}/` + `master_summary.csv` + `runs_raw.csv`
+> - uruchomienie: `bash stream/run_experiments.sh`
+>
+> Poza nazwami klas nieaktualne są tu również **wszystkie konfiguracje i liczby**, m.in.:
+> `seeds: [1]` (obecnie 5 seedów), listy modeli (E1 ma dziś 8 wariantów: `Majority`,
+> `NoChange`, `HT`, `ARF`, `SRP` oraz ich wersje `+S1` — a nie tylko warianty z S1),
+> skład zbiorów (STAGGER usunięty z E1/E2/E3/E4, doszedł LED; E4 przebudowany na trzy
+> rodziny w parach Low/HiDyn).
+>
+> **Aktualne źródła, z których należy korzystać:**
+>
+> | zagadnienie | plik |
+> |---|---|
+> | metodologia, pomiary, architektura runnera | `stream/METHODOLOGY.md` |
+> | katalog klas i zależności | `stream/CODE_MAP.md` |
+> | przepływ instancji, mechanizmy, wyniki liczbowe | `stream/STREAM_PROCESSING_FLOW_SUMMARY.md` |
+> | co zawiera każda tabela/figura | `analysis/RESULTS_INVENTORY.md` |
+> | co umieścić w rozdziale „Wyniki" | `stream/PLAN_ROZDZIALU_WYNIKI.md` |
+> | definicja bloków (źródło prawdy) | `src/main/java/thesis/experiments/master_experiments.json` |
+>
+> Plik zachowany wyłącznie jako zapis wcześniejszego etapu projektu. **Nie cytuj z niego
+> liczb ani nazw klas w pracy.**
 
 ---
 

@@ -5,15 +5,6 @@ import thesis.evaluation.MetricsCollector;
 import java.util.List;
 import java.util.Set;
 
-/**
- * Drives {@link RunDetailedRecorder} through controlled accuracy trajectories to pin down the
- * recovery-episode semantics.
- *
- * <p>These cases exist because the previous implementation reported {@code recovery_length == 1}
- * for 64–90 % of all episodes: it sampled the baseline at alarm time (already degraded), only
- * evaluated at window boundaries (so "1 window" was the shortest representable answer), and
- * declared recovery on the first boundary without ever requiring a drop to have happened.
- */
 public final class RecoveryMetricSmokeTest {
 
     private static final int WINDOW = 100;
@@ -32,7 +23,6 @@ public final class RecoveryMetricSmokeTest {
         if (failed > 0) System.exit(1);
     }
 
-    /** A harness pairing a recorder with a metrics collector, fed one instance at a time. */
     private static final class Harness {
         final RunDetailedRecorder rec = new RunDetailedRecorder(
                 "T", "ds", "var", "model", "S1", "ADWIN", 1, 3, WINDOW);
@@ -42,7 +32,6 @@ public final class RecoveryMetricSmokeTest {
 
         Harness() { rec.onInitialSelection(0, selection); }
 
-        /** Feed {@code count} instances; {@code correct} controls whether the prediction matches. */
         void feed(int count, boolean correct) { feed(count, correct, false); }
 
         void feed(int count, boolean correct, boolean alarmOnFirst) {

@@ -15,22 +15,11 @@ from analysis import (
     cross_experiment,
 )
 
-# Extensions this pipeline produces. Anything else found under figures/ or tables/ is left
-# alone, so a hand-added note or README survives a regeneration.
 _GENERATED_SUFFIXES = {".pdf", ".png", ".svg", ".tex"}
 
 
 def clean_outputs() -> int:
-    """
-    Delete figures/ and tables/ artefacts from a previous run before regenerating.
-
-    Plot and table writers overwrite by filename but never remove outputs that stopped being
-    produced. After a metric is renamed or a block's dataset list changes, the obsolete files
-    stay behind under names almost identical to the current ones — `tab_e4_avg_ranks_kappa_per`
-    next to `tab_e4_avg_ranks_kappa_temporal`, or E4 figures for a stream that block no longer
-    uses. Only the mtime distinguishes them, which makes them very easy to paste into the thesis
-    by accident.
-    """
+    """Delete figures/ and tables/ artefacts from a previous run before."""
     removed = 0
     for root in (config.FIGURES_DIR, config.TABLES_DIR):
         if not root.exists():

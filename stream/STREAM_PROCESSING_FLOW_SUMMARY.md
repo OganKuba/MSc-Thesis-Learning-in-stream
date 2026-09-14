@@ -5,7 +5,7 @@ Ten dokument podsumowuje flow projektu w formie metodologicznej: co dzieje sie z
 Opis dotyczy aktualnego kodu projektu, szczegolnie:
 
 - `stream/src/main/java/thesis/experiments/UnifiedStreamExperimentRunner.java`
-- `stream/src/main/java/thesis/pipeline/StreamPipeline.java`
+- `stream/src/main/java/thesis/pipeline/SyntheticStreamFactory.java`
 - `stream/src/main/java/thesis/discretization/*`
 - `stream/src/main/java/thesis/detection/*`
 - `stream/src/main/java/thesis/selection/*`
@@ -104,7 +104,9 @@ surowe cechy -> PiD -> biny dyskretne -> ranker IG -> score cech
 
 ### 3.1. Po co PiD
 
-Rankery takie jak `InformationGainRanker`, `MutualInformationRanker` i `ChiSquaredRanker` pracuja na wartosciach dyskretnych. Dane wejsciowe moga byc ciagle, wiec trzeba je zdyskretyzowac.
+Ranker czestosciowy (`InformationGainRanker`, jedyna implementacja `AbstractFrequencyRanker`)
+pracuje na wartosciach dyskretnych — liczy IG z tensora kontyngencji `[cecha][bin][klasa]`.
+Dane wejsciowe moga byc ciagle, wiec trzeba je zdyskretyzowac.
 
 PiD robi to osobno dla kazdej cechy:
 
@@ -1396,21 +1398,27 @@ jakosc wzgledem modelu widzacego wszystkie cechy.
 
 | Dataset | HT (NONE) | HT+S1 | ARF (NONE) | ARF+S1 | SRP (NONE) | SRP+S1 | Uwaga |
 |---|---:|---:|---:|---:|---:|---:|---|
-| STAGGER | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | trywialny, czysta reguła |
-| RandomRBF | 0.885 | 0.784 | **0.937** | 0.846 | 0.929 | 0.792 | pelna przestrzen wygrywa |
-| SEA | 0.611 | 0.603 | 0.744 | **0.755** | 0.530 | 0.526 | S1 neutralne/slightly plus dla ARF |
-| NYCTaxi | **0.797** | 0.464 | 0.783 | 0.452 | 0.759 | 0.462 | S1 mocno obcina sygnal |
-| FeatureDrift | 0.614 | 0.358 | **0.667** | 0.380 | 0.584 | 0.257 | raw modele duzo lepsze niz S1 |
-| YahooFinance | 0.069 | 0.043 | **0.291** | 0.227 | 0.104 | 0.033 | trudny dataset, ale NONE > S1 |
-| Hyperplane | 0.637 | 0.190 | **0.718** | 0.194 | 0.617 | 0.121 | S1 bardzo szkodliwe |
-| NHTS | 0.225 | -0.007 | 0.188 | 0.000 | **0.413** | 0.000 | **kappa=0 mimo acc 0.98** dla S1 |
+| RandomRBF | 0.885 | 0.784 | **0.937** | 0.842 | 0.922 | 0.792 | pelna przestrzen wygrywa |
+| LED | **0.713** | 0.592 | 0.710 | 0.589 | 0.705 | 0.595 | 7 istotnych z 24; K=5 nie wystarcza |
+| SEA | 0.611 | 0.603 | 0.745 | **0.754** | 0.403 | 0.535 | jedyny zbior, gdzie S1 pomaga |
+| NYCTaxi | **0.797** | 0.464 | 0.784 | 0.468 | 0.778 | 0.450 | S1 mocno obcina sygnal |
+| FeatureDrift | 0.614 | 0.358 | **0.672** | 0.389 | 0.622 | 0.305 | raw modele duzo lepsze niz S1 |
+| YahooFinance | 0.069 | 0.043 | **0.280** | 0.204 | 0.152 | 0.043 | trudny dataset, ale NONE > S1 |
+| Hyperplane | 0.637 | 0.190 | **0.712** | 0.193 | 0.647 | 0.156 | S1 bardzo szkodliwe |
+| NHTS | 0.225 | -0.007 | 0.377 | 0.040 | **0.410** | 0.077 | acc ~0.98 przy kappa ~0 dla S1 |
+
+> **STAGGER zniknal z E1** (kappa = 1.000 dla kazdego wariantu → zero dyskryminacji);
+> w zamian doszedl **LED**. Wczesniejsza wersja tej tabeli zawierala liczby sprzed naprawy
+> propagacji seeda — najwieksza roznica to **NHTS/ARF: 0.188 → 0.377** (stara wartosc byla
+> jednym pechowym losowaniem powielonym piec razy) oraz **NHTS/SRP+S1: 0.000 → 0.077**,
+> czyli slynne „kappa = 0" nie bylo kolapsem modelu, tylko artefaktem.
 
 Srednie po E1:
 
 ```text
-ARF bez FS = 0.666  vs  ARF+S1 = 0.482
-HT  bez FS = 0.605  vs  HT+S1  = 0.429
-SRP bez FS = 0.617  vs  SRP+S1 = 0.399
+ARF bez FS = 0.652  vs  ARF+S1 = 0.435
+HT  bez FS = 0.569  vs  HT+S1  = 0.378
+SRP bez FS = 0.580  vs  SRP+S1 = 0.369
 ```
 
 Wnioski do interview:
@@ -1430,11 +1438,16 @@ Wnioski do interview:
 
 | Dataset | ARF+S1 | ARF+S2 | zysk S2 vs S1 | Interpretacja |
 |---|---|---|---|---|
-| Hyperplane | 0.194 | **0.754** | **+0.560** | relevance sie zmienia → ogromny zysk |
-| FeatureDrift | 0.380 | **0.704** | **+0.324** | dryft dotyka konkretnych cech → duzy zysk |
-| RandomRBF | 0.846 | 0.846 | ~0 | relevance stabilna → brak zysku |
-| SEA | 0.755 | 0.753 | ~0 | dryft globalny, nie feature-specific |
-| STAGGER | 1.000 | 1.000 | 0 | trywialny |
+| Hyperplane | 0.193 | **0.752** | **+0.559** | relevance sie zmienia → ogromny zysk |
+| FeatureDrift | 0.389 | **0.722** | **+0.333** | dryft dotyka konkretnych cech → duzy zysk |
+| RandomRBF | 0.842 | 0.842 | 0.000 | relevance stabilna → brak zysku |
+| SEA | 0.754 | 0.756 | +0.002 | dryft globalny, nie feature-specific |
+| LED | 0.589 | 0.589 | 0.000 | K=5 z 24 cech — selekcja strukturalnie nie lapie wzorca |
+
+> **Uwaga o punkcie odniesienia.** Zysk liczony wzgledem S1 jest zawyzony, bo S1 jest
+> najslabsza mozliwa referencja. Wzgledem modelu **bez selekcji** (raw ARF) ten sam `ARF+S2`
+> zyskuje na Hyperplane tylko **+0.040**, a nie +0.559 — reszta to odrobienie szkody
+> wyrzadzonej przez statyczny podzbior. Patrz `tab_e2_delta_vs_raw`.
 
 Dla SRP podobnie (Hyperplane 0.121→0.636 dla S2). **S2 zwykle >= S4** — bardziej
 zlozony S4 nie byl konsekwentnie lepszy (np. FeatureDrift ARF: S2=0.704 > S4=0.647;
@@ -1447,71 +1460,123 @@ S3=0.673). To potwierdza teze: *adaptacja jest warunkowa, nie darmowa*.
 
 ### 15.3. E3 — ablacja DA-SRP / DA-ARF
 
-DA-SRP, kappa (5 seedow):
+DA-SRP, kappa (8 zbiorow, 5 seedow):
 
-| Dataset | SRP+S1(topK) | DA-SRP-A | DA-SRP-AB | DA-SRP-ABC | ARF+S2 |
-|---|---|---|---|---|---|
-| RandomRBF | 0.792 | **0.929** | 0.929 | 0.922 | 0.846 |
-| NYCTaxi | 0.462 | **0.759** | 0.707 | 0.654 | 0.467 |
-| Hyperplane | 0.121 | 0.617 | 0.617 | **0.623** | 0.754 |
-| FeatureDrift | 0.257 | 0.584 | 0.584 | **0.585** | 0.704 |
-| SEA | 0.526 | 0.530 | 0.530 | **0.537** | 0.753 |
-| NHTS | 0.000 | **0.413** | 0.350 | 0.338 | 0.345 |
-| YahooFinance | 0.033 | 0.104 | 0.142 | 0.122 | 0.251 |
-| STAGGER | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| Dataset | SRP+S1 | DA-SRP-A | DA-SRP-AB | DA-SRP-ABC | ARF+S2 | ARF (raw) |
+|---|---|---|---|---|---|---|
+| RandomRBF | 0.792 | 0.921 | 0.932 | 0.928 | 0.842 | **0.937** |
+| LED | 0.595 | 0.694 | 0.718 | **0.720** | 0.589 | 0.710 |
+| SEA | 0.535 | 0.610 | 0.753 | 0.749 | **0.756** | 0.745 |
+| Hyperplane | 0.156 | 0.631 | 0.717 | 0.714 | **0.752** | 0.712 |
+| FeatureDrift | 0.305 | 0.676 | 0.661 | 0.680 | **0.722** | 0.672 |
+| NYCTaxi | 0.450 | 0.708 | 0.687 | 0.678 | 0.474 | **0.784** |
+| NHTS | 0.077 | **0.388** | 0.378 | 0.313 | 0.378 | 0.377 |
+| YahooFinance | 0.043 | 0.103 | 0.092 | 0.064 | 0.226 | **0.280** |
 
-- **Srednie rangi (E3_stats_report):** DA-SRP-A=2.375 < AB=2.625 < ABC=2.875 <
-  ARF+S2=3.188 < SRP+S1=3.938. Nizsza ranga = lepiej. **Najlepszy wariant to A, nie ABC.**
-- **Friedman p=0.243** → globalnie brak istotnych roznic miedzy 5 metodami.
-- **Wilcoxon vs SRP+S1(topK):** A=WIN (p=0.047), AB=WIN (p=0.047), ABC=ns (p=0.109).
-- **Wilcoxon vs ARF+S2:** wszystkie ns.
+- **Srednie rangi (kappa, 10 metod):** ARF=4.00 < DA-SRP-AB=4.375 < ARF+S2=4.50 <
+  DA-ARF-AB=4.75 < DA-ARF-A=5.00 < DA-SRP-ABC=5.375 < DA-ARF-ABC=5.50 < SRP=5.625 <
+  DA-SRP-A=6.125 < SRP+S1=9.75. Nizsza ranga = lepiej.
+- **Friedman kappa: p = 0.0072** — istotny. Nemenyi ma tu jednak CD = 4.79 przy skali 1-10,
+  wiec rozstrzyga tylko skrajnosci; wnioski opieraj na Wilcoxonie z poprawka Holma
+  (11/45 par istotnych).
+- **Najlepszy wariant DA to AB, nie A i nie ABC.** Komponent B (importance-weighted
+  sampling) pomaga, komponent C (top-K voting) szkodzi w obu rodzinach.
 
-DA-ARF, kappa (STARY run): slabszy niz ARF+S2 na E3 — ale to **artefakt bugow bazowego lasu**
-(nietrojone drzewa + waska podprzestrzen), NIE wada idei. **Po naprawie DA-ARF jest konkurencyjny**
-— pelna, zaktualizowana interpretacja w sekcji 11.8. Te liczby podmienic po re-runie.
+> **Uwaga: ta sekcja byla wczesniej oparta o stary przebieg** (sprzed naprawy propagacji
+> seeda) i miala odwrotne wnioski — „najlepszy wariant to A", „Friedman p = 0.243",
+> „DA-ARF slabszy przez bugi bazowego lasu". Zadne z tych zdan nie obowiazuje.
 
-**Uwaga o "raw SRP" i o starszych notatkach.** Wczesniejszy tekst pracy / notatki
-podawaly, ze DA-SRP-**ABC** jest najlepszy (np. NYC Taxi ~0.797). Aktualne CSV tego
-nie potwierdzaja: dodawanie komponentu B (importance sampling) i C (top-K voting)
-**nie poprawia sredniej**, a na danych realnych **pogarsza** (NYCTaxi A=0.759 → ABC=0.654;
-NHTS A=0.413 → ABC=0.338). Ponadto "raw SRP" z notatek (SEA 0.530, Hyperplane 0.617,
-NYCTaxi 0.759…) to dokladnie kolumna **DA-SRP-A** powyzej — czyli SRP z pelnym dostepem
-do cech + KEEP/SURGICAL/FULL. Nie mylic z `SRP+S1(topK)`, ktory jest okrojony do
-`ceil(sqrt(d))` cech i przez to duzo slabszy.
+Ablacja komponentow (srednia kappa po 8 zbiorach):
 
-Poprawna, uczciwa narracja na interview (zgodna z danymi):
+| metoda | A | AB | ABC |
+|---|---|---|---|
+| DA-ARF | 0.6007 | 0.6175 (**+0.017**) | 0.6134 (**-0.004**) |
+| DA-SRP | 0.5914 | 0.6171 (**+0.026**) | 0.6058 (**-0.011**) |
 
-> On the SRP family, the strongest configuration was the **simplest drift-aware
-> variant (A)** — full feature access plus KEEP/SURGICAL/FULL subspace repair.
-> Adding importance-weighted sampling (B) and top-K corrected voting (C) did **not**
-> help on average, and on the two real datasets (NYC Taxi, NHTS) the full ABC
-> variant was clearly worse. Across the eight datasets Friedman was not significant
-> (p=0.24), so I do **not** claim DA-SRP statistically dominates. What I can claim
-> is narrower: drift-aware subspace repair (A) significantly beats SRP restricted to
-> a static top-K subset (p=0.047) and is competitive with ARF+S2. The negative
-> result about B/C is itself informative: more machinery is not automatically better.
+**Czytaj to ostroznie — srednia po zbiorach jest krucha.** Dla `DA-SRP-AB vs SRP` calosc
+dodatniej sredniej (+0.037) pochodzi z **jednego zbioru**: SEA wnosi +0.044, a po jego
+usunieciu srednia spada do **-0.007**. Powod jest znany — raw SRP ma na SEA kappa 0.403
+przy ARF 0.745, wiec DA-SRP naprawia tam konkretna patologie SRP, a nie poprawia go ogolnie.
+Mediana (+0.011) i liczba wygranych (5/8) sa odporne i to je nalezy cytowac.
+Szczegoly w `tab_e3_ablation_deltas` (kolumny mean / median / std / wins / worst).
 
-### 15.4. E4 — high dynamics
+**Rozjazd miedzy rodzinami — nie zacieraj go:**
 
-| Dataset | ARF+S1 | SRP+S1 | DA-SRP-ABC | DA-ARF-ABC |
+- `DA-SRP-AB` bije surowy SRP na **5/8** zbiorow (mediana +0.011),
+- `DA-ARF-ABC` przegrywa z surowym ARF na **6/8** (mediana -0.015).
+
+Metoda oparta na SRP sie broni, oparta na ARF — nie. Na zbiorach syntetycznych
+`DA-SRP-ABC` jest najlepsze ze wszystkiego (0.758 vs ARF 0.755), ale na realnych spada do
+0.347 wobec 0.432 dla ARF: przewaga powstaje tam, gdzie zalozenia metody sa spelnione
+(zlokalizowany dryft istotnosci cech), i znika na danych rzeczywistych.
+
+**Dowod, ze adaptacja jest celowana** (`e3_action_vs_overlap`, 21 960 par zdarzenie-learner):
+learner, w ktorego podprzestrzeni nie ma zadnej swiezo dryfujacej cechy, dostaje KEEP w 86%
+przypadkow i **nigdy** wymiany chirurgicznej; learner z co najmniej jedna taka cecha dostaje
+SURGICAL w 87-98% i **nigdy** nie zostaje nietkniety. To odpowiada na zarzut, ze zysk
+komponentu B moglby wynikac z samego dodatkowego resetowania.
+
+### 15.4. E4 — intensywnosc dryftu (Low vs HiDyn)
+
+Blok przebudowany: **4 metody x 6 zbiorow** w trzech rodzinach (STAGGER usuniety jako
+nasycony, warianty `+S1` usuniete). Dzieki temu Nemenyi ma CD = 1.91 zamiast 3.77 — to
+jedyny blok, w ktorym ten test cokolwiek rozstrzyga.
+
+| Dataset | ARF | SRP | DA-ARF-ABC | DA-SRP-ABC |
 |---|---|---|---|---|
-| STAGGER-HiDyn | 0.554 | 0.546 | **1.000** | 0.918 |
-| STAGGER-Low | 1.000 | 1.000 | 1.000 | 1.000 |
-| SEA-HiDyn | **0.750** | 0.531 | 0.557 | 0.400 |
-| SEA-Low | 0.742 | **0.743** | 0.486 | 0.538 |
+| SEA-Low | 0.731 | 0.489 | **0.737** | 0.736 |
+| SEA-HiDyn | 0.733 | 0.536 | 0.749 | **0.749** |
+| FeatureDrift-Low | 0.754 | 0.745 | 0.783 | **0.794** |
+| FeatureDrift-HiDyn | **0.642** | 0.593 | 0.617 | 0.617 |
+| RandomRBF-Low | **0.937** | 0.922 | 0.909 | 0.928 |
+| RandomRBF-HiDyn | **0.875** | 0.866 | 0.839 | 0.853 |
 
-Wniosek: DA-SRP-ABC blyszczy na **STAGGER-HiDyn** (dryft co ~kilka tys. instancji,
-reguły dyskretne — adaptacja lapie zmiane, gdzie statyczne ARF/SRP gubia sie na
-0.55). Na SEA (dryft globalny, ciagly) prosty ARF+S1 nadal wygrywa.
+Osie intensywnosci: SEA = liczba nagłych zmian (3 → 10), FeatureDrift = ile cech dryfuje
+(2 → 10), RandomRBF = predkosc centroidow (0.001 → 0.010). W kazdej parze przestrzen cech
+jest identyczna, wiec roznica **wewnatrz pary** izoluje sam wplyw intensywnosci.
+
+**Wynik przeczy hipotezie.** Zakladano, ze DA-* straci mniej niz zwykle ARF/SRP. Sredni
+spadek Low → HiDyn: ARF **-0.057**, SRP **-0.054**, ale DA-ARF-ABC **-0.075** i
+DA-SRP-ABC **-0.080**. Najostrzej na FeatureDrift (-0.167 / -0.178), czyli dokladnie
+w scenariuszu, pod ktory metoda byla projektowana. Prawdopodobna przyczyna: przy 10
+dryfujacych cechach wymiana chirurgiczna nie ma dokad uciec — brakuje stabilnych cech na
+nowa podprzestrzen.
+
+**Osobny wniosek metodologiczny:** na SEA **wszystkie** metody zyskuja przy wiekszej liczbie
+dryfow (SRP nawet +0.047). Sama czestotliwosc dryfu nie utrudnia zadania — SEA cyklicznie
+wraca do wczesniejszych konceptow, wiec 10 zmian to wiecej powtorzen tego samego. Utrudnia
+dopiero **zakres** dryfu: ile cech sie zmienia (FeatureDrift) albo jak szybko (RandomRBF).
 
 ### 15.5. E5 — wybor detektora ma znaczenie (dla DA-ARF)
 
 | Dataset | ADWIN | HDDM_A | HDDM_W | KSWIN |
 |---|---|---|---|---|
-| Hyperplane | 0.209 | **0.451** | 0.376 | 0.284 |
-| SEA-HiDyn | 0.400 | 0.480 | **0.556** | 0.575 |
-| RandomRBF | 0.837 | **0.846** | 0.841 | 0.839 |
-| STAGGER-HiDyn | 0.918 | 0.918 | 0.918 | 0.918 |
+| Hyperplane | 0.710 | 0.720 | 0.722 | **0.734** |
+| RandomRBF | **0.909** | 0.905 | 0.905 | 0.901 |
+| SEA-HiDyn | **0.749** | 0.741 | 0.733 | 0.744 |
+| STAGGER-HiDyn | **1.000** | 0.928 | 0.878 | 0.989 |
+
+Wartosci dotycza `DA-ARF` z danym detektorem. Rozpietosc miedzy detektorami jest **mala**
+(0.01-0.12 kappa), znacznie mniejsza niz roznica miedzy modelami — dla porownania
+`ARF+ADWIN` = 0.712 wobec `SRP+S1+ADWIN` = 0.156 na Hyperplane.
+
+**Sama liczba alarmow nie rozstrzyga — liczy sie ich skutecznosc.** Mierzac zmiane accuracy
+w oknie po alarmie (`tab_e5_alarm_effectiveness`):
+
+| wariant | alarmy | srednia dacc | uzyteczne (>= 1 pp) | szkodliwe (<= -1 pp) |
+|---|---|---|---|---|
+| DA-ARF+HDDM_W | 30 | +0.017 | **66.7%** | 20.0% |
+| DA-ARF+ADWIN | 125 | +0.004 | 45.6% | 26.4% |
+| ARF+S1+ADWIN | 136 | **-0.006** | 37.5% | **46.3%** |
+
+HDDM_W strzela najrzadziej, ale kupuje najwiecej za jeden alarm — jest oszczedny, a nie
+martwy. Warianty z S1 maja wiecej alarmow szkodliwych niz uzytecznych i ujemna srednia:
+dla modelu na okrojonej przestrzeni cech adaptacja po alarmie statystycznie *szkodzi*.
+
+> **Uwaga: poprzednia wersja tej sekcji byla ze starego przebiegu** i podawala np.
+> Hyperplane/ADWIN = 0.209 wobec HDDM_A = 0.451, z wnioskiem o „ponad 2x lepszej kappie".
+> W aktualnych danych rozpietosc na Hyperplane to 0.710-0.734, wiec ten wniosek nie
+> obowiazuje.
 
 Wniosek: **ADWIN nie jest uniwersalnie najlepszy.** Na gradualnym Hyperplane
 HDDM_A daje ponad 2× lepsza kappe niz ADWIN dla DA-ARF. To dobra amunicja na
@@ -1554,7 +1619,9 @@ Trzy poziomy ostrosci na macierzy `datasety × warianty` (usrednionej po seedach
 
 5 seedow → powtarzalnosc dla stochastycznych generatorow. Testy nieparametryczne, bo
 liczba datasetow mala i normalnosc nieuzasadniona. **Nie twierdzimy dominacji, gdy
-Holm/Friedman jej nie potwierdza** (patrz E3: p=0.243).
+Holm/Friedman jej nie potwierdza**. W E3 Friedman na kappie jest istotny (p = 0.0072), ale
+Nemenyi ma tam CD = 4.79 przy skali 1-10, wiec rozstrzygaja dopiero pary z Wilcoxona
+(11/45 istotnych).
 
 ### 16.4. Multiple testing w Level-2: Benjamini-Hochberg FDR
 
@@ -1590,19 +1657,29 @@ recovery, precision/recall lokalizacji (blok E4 to robi).
 
 ### 17.2. Dane realne (pipeline `preproccessing/`, → CSV + ARFF dla MOA)
 
-Wszystkie cechy sa **kauzalne** (tylko przeszlosc/terazniejszosc; rolling/lag bez
-zagladania w przyszlosc) — zapobiega leakage.
+Cechy sa **kauzalne** (tylko przeszlosc/terazniejszosc; rolling/lag bez zagladania
+w przyszlosc). Kauzalnosc **nie wystarcza** — patrz notka o NYC Taxi ponizej: cecha moze byc
+w pelni kauzalna, a mimo to pozwalac odtworzyc etykiete.
 
 - **Yahoo Finance** — 80 tickerow, 7 sektorow, 2015-2025, dzienne bary. Cechy:
   SMA/EMA/MACD/RSI/Bollinger (`ta`). Target: ruch ceny (up/flat/down, prog ±0.5%).
   **Bardzo trudny** (kappa baseline ~0.03-0.23) — rynki blisko random walk.
-- **NYC Taxi (TLC)** — 20 stref Manhattanu, 2022-2024 (36 plikow miesiecznych).
-  Cechy: cykliczne czas (sin/cos hour, dow), weekend, swieta, `neighbor_avg_demand`
-  (sasiedztwo geograficzne stref). Target: poziom popytu. **Najlepszy real-world
-  przypadek dla adaptacji** (DA-SRP-A=0.759).
+- **NYC Taxi (TLC)** — 20 stref Manhattanu, 2022-2024 (36 plikow miesiecznych), 405 306
+  instancji, **19 cech**. Cechy: cykliczne czas (sin/cos hour, dow), weekend, swieta, lagi
+  i srednie kroczace popytu, `neighbor_avg_demand`. Target: `demand_level` = czy `trip_count`
+  w **biezacej** godzinie przekracza mediane historyczna strefy. To **nowcasting**, nie prognoza
+  na t+1 — do poprawienia w opisie w pracy.
+  > **Naprawiony wyciek etykiety (2026-09-01).** `delta_trip_count` = `trip_count − lag1`, wiec
+  > dodanie dwoch cech odtwarzalo `trip_count`, z ktorego liczona jest etykieta. Regula
+  > z dwoch cech dawala κ = 0.772 wobec 0.784 dla pelnego ARF — ~98% wyniku bylo odtwarzaniem
+  > definicji etykiety. Cecha usunieta z ARFF; srednia κ na tym zbiorze spadla z 0.594 do 0.507.
 - **NHTS** — National Household Travel Survey, edycje 2009/2017/2022 (naturalny dryft
-  miedzy edycjami). Target: srodek transportu (Private Vehicle / Transit / Active).
-  **~98% Private Vehicle** → accuracy myli, kappa jest wlasciwa metryka.
+  miedzy edycjami), 1 985 822 instancje, **16 cech**. Target: srodek transportu
+  (Private Vehicle / Transit / Active). **97.3% Private Vehicle** → accuracy myli, kappa jest
+  wlasciwa metryka. Dryft jest **skokowy i trzykrokowy** (granice edycji), a nie ciagly.
+  > Z cech usunieto `edition_boundary` — flage rowna 1 w dokladnie dwoch wierszach na 2 mln,
+  > tam gdzie zmienia sie edycja. W pracy o **wykrywaniu** dryftu podawanie modelowi znacznika
+  > „tutaj zmienia sie rozklad" jest tym, co detektor ma znalezc sam.
 
 Wniosek z pracy: **mocny wynik na syntetyce nie przenosi sie automatycznie na
 real-world.** Traktowac synthetic-to-real transfer jako osobne pytanie badawcze.
@@ -1656,11 +1733,11 @@ wizualizacje.
 | Dlaczego DA-ARF bywal slabszy | **NIE** z powodu braku SURGICAL (obalone — surgical w ARF wrecz szkodzi). Prawdziwa przyczyna: nietrojone drzewa (grace=200/δ=1e-7) + waska podprzestrzen ⌈√d⌉ w bazowym lesie. Po naprawie (grace=50/δ=0.01 + 0.5·d) DA-ARF jest konkurencyjny — sekcja 11.8. |
 | Importance-weighted sampling | `w = (1-beta)·importance^power + beta·uniform`; beta=0.7, power=2.0. Balans exploitation vs diversity ensembla. **Ablacja B/C (po naprawie): komponent B POMAGA** (usuniecie szkodzi) — wczesniejszy wniosek "B nie pomaga" byl na zepsutym DA-ARF. |
 | S1-S4 | S1 statyczny; S2 alarm-triggered re-select; S3 periodic swap (≤30%/cykl); S4 periodic+alarm z targetowaniem drifting features. **S2 zwykle ≥ S4.** |
-| Kiedy adaptacja pomaga | E2: Hyperplane +0.560, FeatureDrift +0.324 kappa. RandomRBF/SEA ~0. → warunkowa. |
+| Kiedy adaptacja pomaga | E2 wzgledem S1: Hyperplane +0.559, FeatureDrift +0.333, RandomRBF/SEA/LED ~0 → warunkowa. **Wzgledem modelu bez selekcji** te same zyski to tylko +0.040 i +0.050 — reszta to odrobienie szkody S1. |
 | Kappa vs accuracy | NHTS acc 0.98, kappa 0 (98% majority). Temporal kappa dla autokorelacji (NYC/ceny), bywa ujemna (Yahoo -0.32). |
-| Czy zyski nie sa losowe | 5 seedow, Friedman+Nemenyi+Wilcoxon+Holm. **E3 Friedman p=0.243** → brak dominacji; tylko DA-SRP-A vs SRP+S1(topK) istotne (p=0.047). |
+| Czy zyski nie sa losowe | 5 seedow, Friedman+Nemenyi+Wilcoxon+Holm. **E3 Friedman kappa p = 0.0072** (istotny), ale Nemenyi CD = 4.79 nie rozstrzyga — wnioski z Wilcoxona, 11/45 par. Srednia Δκ jest krucha: dla DA-SRP-AB vs SRP caly dodatni wynik pochodzi z SEA (leave-one-out odwraca znak), wiec cytuj mediane i wins. |
 | Leakage | strict temporal order, brak shuffle, cechy kauzalne (rolling/lag bez future), test-then-train, statystyki online. |
-| Why ADWIN | domyslny globalny trigger na bledzie; **ale E5: nie zawsze najlepszy** — HDDM_A > ADWIN na gradualnym Hyperplane dla DA-ARF (0.451 vs 0.209). |
+| Why ADWIN | domyslny globalny trigger na bledzie. **E5: wybor detektora wazy malo** — rozpietosc kappa miedzy 4 detektorami przy tym samym DA-ARF to 0.01-0.12, wobec 0.45+ miedzy modelami. Roznica jest w *skutecznosci* alarmu: HDDM_W strzela 30 razy i 67% alarmow daje >= 1 pp accuracy, ADWIN 125 razy przy 46%. |
 | Co zawiodlo (zaktualizowane) | (1) DA-ARF < ARF NIE bylo wina architektury — to byly bugi bazowego lasu (nietrojone drzewa + waska podprzestrzen); **po naprawie DA-ARF jest konkurencyjny** (sekcja 11.8). (2) DA-SRP zrefaktorowany na wersje natywna bez refleksji. (3) B/C w DA-SRP na starym runie nie zawsze pomagaly — do weryfikacji po re-runie (w DA-ARF B/C pomagaja). |
 | Business value | selektywna adaptacja zmniejsza niepotrzebne resety i skraca recovery gdy tylko czesc reprezentacji sie starzeje; aktywowac warunkowo, bo zlozonosc ma koszt. |
 

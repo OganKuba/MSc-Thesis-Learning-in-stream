@@ -5,16 +5,8 @@ import lombok.Getter;
 import java.util.Arrays;
 import java.util.Set;
 
-/**
- * Baseline selector that preserves the complete input representation.
- *
- * <p>This is intentionally separate from {@link StaticFeatureSelector}: S1 ranks
- * features and keeps only the top-k subset, while NONE performs no feature
- * selection and lets the downstream learner use every original attribute.</p>
- */
 public class NoFeatureSelection implements FeatureSelector {
 
-    /** All features are always used, so the selection never changes. */
     @Override
     public String lastSelectionTrigger() { return "none"; }
 

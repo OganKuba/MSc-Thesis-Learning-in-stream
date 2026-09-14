@@ -8,7 +8,7 @@ from . import config, loaders, latex_tables, plot_utils, block_utils
 
 BLOCK = "E1"
 
-#: RAM-Hours are reported in units of 1e-6 GB-h — see config.RAMH_SCALE for why.
+# : RAM-Hours are reported in units of 1e-6 GB-h - see
 RAMH_SCALE = config.RAMH_SCALE
 
 
@@ -53,14 +53,9 @@ def table_resources(summary: pd.DataFrame):
                 row[f"{v}-RAMh"] = np.nan
                 row[f"{v}-thr"] = np.nan
             else:
-                # RAM-Hours are model-size based (fractions of a MB held for minutes), so the
-                # raw figures sit around 1e-6 GB-h and round to 0.00 at table precision.
-                # Report them in units of 1e-6 GB-h; the caption carries the multiplier.
                 ram = d.ram_hours_gb_mean.iloc[0] if "ram_hours_gb_mean" in d else np.nan
                 row[f"{v}-RAMh"] = ram * RAMH_SCALE
                 thr = d.throughput_mean.iloc[0] if "throughput_mean" in d else np.nan
-                # Pre-formatted: throughput needs no decimals, while the RAM columns need three
-                # (a single ndigits for the whole table cannot serve both).
                 row[f"{v}-thr"] = "-" if pd.isna(thr) else f"{thr:.0f}"
         rows.append(row)
     df = pd.DataFrame(rows).set_index("Dataset")
@@ -194,8 +189,6 @@ def plot_feature_importance(feat_imp: pd.DataFrame):
 
 def write_stat_tables(stat_tests: dict):
     block_utils.friedman_table(BLOCK, stat_tests)
-    # Only the metrics the thesis actually cites; previously every STAT_METRICS entry got
-    # its own avg_ranks table (6 per block = 30 unused files).
     for metric in config.RANK_TABLE_METRICS:
         block_utils.per_metric_rank_table(BLOCK, stat_tests, metric)
     block_utils.nemenyi_table(BLOCK, stat_tests, metric="kappa")
@@ -219,8 +212,6 @@ def run():
     plot_windows_accuracy(data["windows"])
     plot_drift_alarms(data["drift_alarms"])
     plot_recovery(data["recovery_time"])
-    # B2: E1 selection is static (K=ceil(sqrt(d)) frozen at warm-up), so the
-    # selected-count / stability overview carries no signal — intentionally skipped.
     plot_feature_importance(data["feature_importance"])
     write_stat_tables(data["stat_tests"])
 

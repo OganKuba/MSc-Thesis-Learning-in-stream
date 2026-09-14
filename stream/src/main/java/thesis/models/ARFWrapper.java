@@ -11,7 +11,6 @@ import java.util.Set;
 
 public class ARFWrapper implements ModelWrapper {
 
-    /** MOA's own default ({@code AbstractClassifier.randomSeedOption}) — keeps legacy behaviour. */
     public static final int DEFAULT_SEED = 1;
 
     @Getter private final FeatureSelector selector;
@@ -75,9 +74,6 @@ public class ARFWrapper implements ModelWrapper {
         } catch (Exception e) {
             throw new IllegalStateException("ARF option 'a' (lambda) not available", e);
         }
-        // Must precede prepareForUse(): AbstractClassifier.resetLearning() seeds classifierRandom
-        // from randomSeedOption there. Without this every run shares MOA's default seed, so the
-        // 5 configured seeds collapse to 5 identical runs on deterministic (ARFF) streams.
         a.setRandomSeed(seed);
         a.prepareForUse();
         return a;
