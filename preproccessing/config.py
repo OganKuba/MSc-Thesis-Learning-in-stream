@@ -1,17 +1,9 @@
-"""
-Global configuration constants for all preprocessing pipelines.
-"""
+"""Global configuration constants for all preprocessing pipelines."""
 
-# ---------------------------------------------------------------------------
-# Base directories
-# ---------------------------------------------------------------------------
 RAW_DIR = "data/raw/"
 PROCESSED_DIR = "data/processed/"
 ARFF_DIR = "data/arff/"  # consumed by Java/MOA
 
-# ---------------------------------------------------------------------------
-# Yahoo Finance — exactly 80 tickers across 7 sectors
-# ---------------------------------------------------------------------------
 YAHOO_TICKERS = [
     # Technology (15)
     "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
@@ -37,10 +29,6 @@ YAHOO_START_DATE = "2015-01-01"
 YAHOO_END_DATE = "2025-01-01"
 YAHOO_INTERVAL = "1d"  # daily bars
 
-# ---------------------------------------------------------------------------
-# NYC Taxi & Limousine Commission (TLC)
-# ---------------------------------------------------------------------------
-# Exactly 20 zone IDs (LocationID from TLC data dictionary)
 NYC_ZONES = [
     161,  # Midtown Center (manhattan_core)
     236,  # Upper East Side North (manhattan_core)
@@ -66,7 +54,7 @@ NYC_ZONES = [
 
 assert len(NYC_ZONES) == 20, f"Expected 20 zones, got {len(NYC_ZONES)}"
 
-# Zone type encoding: 0=manhattan_core, 1=airport, 2=residential, 3=suburban
+# Zone type encoding: 0=manhattan_core, 1=airport, 2=residential
 ZONE_TYPE = {
     161: 0, 236: 0, 237: 0, 170: 0, 100: 0, 163: 0, 230: 0,  # manhattan_core
     132: 1, 138: 1,                                             # airport
@@ -103,9 +91,6 @@ NYC_YEARS = [2022, 2023, 2024]
 NYC_MONTHS = list(range(1, 13))
 NYC_TLC_BASE_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data"
 
-# ---------------------------------------------------------------------------
-# NHTS (National Household Travel Survey)
-# ---------------------------------------------------------------------------
 NHTS_EDITIONS = [2009, 2017, 2022]
 
 # Paths relative to RAW_DIR where NHTS CSVs are expected

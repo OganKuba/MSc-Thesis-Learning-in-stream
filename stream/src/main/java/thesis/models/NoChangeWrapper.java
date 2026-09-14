@@ -1,6 +1,7 @@
 package thesis.models;
 
 import com.yahoo.labs.samoa.instances.Instance;
+import lombok.Getter;
 import thesis.selection.FeatureSelector;
 
 import java.util.Arrays;
@@ -8,11 +9,12 @@ import java.util.Set;
 
 public class NoChangeWrapper implements ModelWrapper {
 
-    private final FeatureSelector selector;
+    @Getter private final FeatureSelector selector;
     private final int numClasses;
     private int lastLabel = -1;
 
     public NoChangeWrapper(FeatureSelector selector, int numClasses) {
+        if (selector == null) throw new IllegalArgumentException("selector must not be null");
         if (numClasses < 2) throw new IllegalArgumentException("numClasses must be >= 2");
         this.selector = selector;
         this.numClasses = numClasses;
@@ -45,13 +47,13 @@ public class NoChangeWrapper implements ModelWrapper {
     }
 
     @Override
-    public FeatureSelector getSelector() { return selector; }
-
-    @Override
     public int[] getCurrentSelection() { return selector.getCurrentSelection(); }
 
     @Override
     public void reset() { lastLabel = -1; }
+
+    @Override
+    public long modelByteSize() { return 16L + 4L; }
 
     @Override
     public String name() { return "NoChange"; }

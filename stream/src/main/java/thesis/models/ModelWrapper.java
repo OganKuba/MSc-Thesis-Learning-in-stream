@@ -5,7 +5,7 @@ import thesis.selection.FeatureSelector;
 
 import java.util.Set;
 
-public interface ModelWrapper {
+public interface  ModelWrapper {
 
     double[] predictProba(Instance full);
 
@@ -22,5 +22,7 @@ public interface ModelWrapper {
 
     void reset();
 
-    String name();
+    default long modelByteSize() { return ModelSize.UNAVAILABLE; }
+
+    default String name() { return getClass().getSimpleName(); }
 }

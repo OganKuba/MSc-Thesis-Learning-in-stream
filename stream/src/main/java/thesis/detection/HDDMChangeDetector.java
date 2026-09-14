@@ -5,16 +5,21 @@ import moa.classifiers.core.driftdetection.AbstractChangeDetector;
 import moa.classifiers.core.driftdetection.HDDM_A_Test;
 import moa.classifiers.core.driftdetection.HDDM_W_Test;
 
-@Getter
+import java.util.Locale;
+import java.util.OptionalDouble;
+
 public class HDDMChangeDetector implements DriftDetector {
 
     public enum Variant { A, W }
 
-    private final Variant variant;
-    private final double alphaD;
-    private final double alphaW;
+    @Getter private final Variant variant;
+    @Getter private final double alphaD;
+    @Getter private final double alphaW;
     private final double lambda;
+
     private AbstractChangeDetector detector;
+    private long inputs;
+    private long drifts;
 
     public static HDDMChangeDetector ofA(double alphaD, double alphaW) {
         return new HDDMChangeDetector(Variant.A, alphaD, alphaW, Double.NaN);
@@ -48,6 +53,13 @@ public class HDDMChangeDetector implements DriftDetector {
         this.detector = build();
     }
 
+    public OptionalDouble getLambda() {
+        return variant == Variant.W ? OptionalDouble.of(lambda) : OptionalDouble.empty();
+    }
+
+    public long getInputCount() { return inputs; }
+    public long getDriftCount() { return drifts; }
+
     private AbstractChangeDetector build() {
         if (variant == Variant.A) {
             HDDM_A_Test d = new HDDM_A_Test();
@@ -67,23 +79,15 @@ public class HDDMChangeDetector implements DriftDetector {
 
     @Override
     public void update(double value) {
+        if (!Double.isFinite(value)) return;
         detector.input(value);
+        inputs++;
+        if (detector.getChange()) drifts++;
     }
 
-    @Override
-    public boolean isChangeDetected() {
-        return detector.getChange();
-    }
-
-    @Override
-    public boolean isWarningDetected() {
-        return detector.getWarningZone();
-    }
-
-    @Override
-    public double getEstimation() {
-        return detector.getEstimation();
-    }
+    @Override public boolean isChangeDetected()  { return detector.getChange(); }
+    @Override public boolean isWarningDetected() { return detector.getWarningZone(); }
+    @Override public double  getEstimation()     { return detector.getEstimation(); }
 
     @Override
     public void reset() {
@@ -93,8 +97,10 @@ public class HDDMChangeDetector implements DriftDetector {
     @Override
     public String name() {
         if (variant == Variant.A) {
-            return "HDDM_A(alphaD=" + alphaD + ", alphaW=" + alphaW + ")";
+            return String.format(Locale.ROOT,
+                    "HDDM_A(alphaD=%.6f, alphaW=%.6f)", alphaD, alphaW);
         }
-        return "HDDM_W(alphaD=" + alphaD + ", alphaW=" + alphaW + ", lambda=" + lambda + ")";
+        return String.format(Locale.ROOT,
+                "HDDM_W(alphaD=%.6f, alphaW=%.6f, lambda=%.6f)", alphaD, alphaW, lambda);
     }
 }

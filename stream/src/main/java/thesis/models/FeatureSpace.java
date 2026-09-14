@@ -29,7 +29,12 @@ public final class FeatureSpace {
 
     public int numFeatures()               { return featureToAttr.length; }
     public int classIndex()                { return classIdx; }
-    public int attrIndexOf(int featureIdx) { return featureToAttr[featureIdx]; }
+    public int attrIndexOf(int featureIdx) {
+        if (featureIdx < 0 || featureIdx >= featureToAttr.length) {
+            throw new IndexOutOfBoundsException("featureIdx=" + featureIdx);
+        }
+        return featureToAttr[featureIdx];
+    }
 
     public double[] extractFeatures(Instance full) {
         double[] out = new double[featureToAttr.length];

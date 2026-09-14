@@ -1,0 +1,24 @@
+/analysis/.venv/
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE files
+.idea/
+
+# Build and experiment outputs
+/stream/target/
+/stream/results/
+
+# Generated/raw preprocessing data
+/preproccessing/**/data/
+/preproccessing/**/*.csv
+/preproccessing/**/*.CSV
+/preproccessing/**/*.arff
+/preproccessing/**/*.parquet
+/preproccessing/**/*.zip
+/preproccessing/**/*.docx
+/preproccessing/**/*.pdf

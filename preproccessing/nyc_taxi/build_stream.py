@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 RELATION_NAME = "nyc_taxi_stream"
 TARGET_COL = "demand_level"
 DROP_COLS = {"timestamp", "zone_id", "pickup_zone", "pickup_hour",
-             "demand", "trip_count"}  # identifiers / raw demand
+             "demand", "trip_count", "delta_trip_count"}
 
 
 def build_stream(

@@ -24,5 +24,25 @@
             <artifactId>commons-math3</artifactId>
             <version>3.6.1</version>
         </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.17.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>1.18.30</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- Java agent behind MOA's measureByteSize(); RAM-Hours is NaN without it on the
+             command line (-javaagent:...). Declared explicitly so the jar is always resolved
+             locally even though MOA already pulls it in transitively. -->
+        <dependency>
+            <groupId>com.github.fracpete</groupId>
+            <artifactId>sizeofag</artifactId>
+            <version>1.1.0</version>
+        </dependency>
     </dependencies>
+
 </project>

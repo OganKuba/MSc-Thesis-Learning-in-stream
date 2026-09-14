@@ -36,6 +36,8 @@ public class EvaluationSmokeTest {
         testRamHoursAccumulatesAndPeak();
         testRamHoursSampleFromRuntimeAutoStarts();
         testRamHoursReset();
+        testRamHoursNegativeSampleClampedInsteadOfThrowing();
+        testMetricsCollectorSurvivesNegativeRamSample();
 
         testRecoveryTimeRecoversWithinTolerance();
         testRecoveryTimeUnrecoveredAfterMaxWindow();
@@ -261,8 +263,53 @@ public class EvaluationSmokeTest {
         r.reset();
         boolean ok = r.getRamHours() == 0.0
                 && r.getPeakBytes() == 0
-                && r.getElapsedHours() == 0.0;
+                && r.getElapsedHours() == 0.0
+                && r.getNegativeSampleCount() == 0;
         report("RAMHours.reset clears state", ok);
+    }
+
+    private static void testRamHoursNegativeSampleClampedInsteadOfThrowing() throws InterruptedException {
+        RAMHours r = new RAMHours();
+        r.start();
+        r.sample(100L * 1024 * 1024);
+        Thread.sleep(10);
+        boolean threw = false;
+        try {
+            r.sample(-1L);
+            r.sample(-12_345_678L);
+        } catch (Throwable t) {
+            threw = true;
+        }
+        Thread.sleep(10);
+        r.sample(150L * 1024 * 1024);
+        boolean ok = !threw
+                && r.getNegativeSampleCount() == 2
+                && r.getRamHours() >= 0.0
+                && Double.isFinite(r.getRamHours())
+                && r.getPeakBytes() == 150L * 1024 * 1024;
+        report("RAMHours clamps negative usedBytes instead of throwing (neg="
+                + r.getNegativeSampleCount() + ", peakMB=" + r.getPeakMB()
+                + ", rh=" + r.getRamHours() + ")", ok);
+    }
+
+    private static void testMetricsCollectorSurvivesNegativeRamSample() {
+        MetricsCollector mc = new MetricsCollector(2, 100, 0, 10);
+        for (int i = 0; i < 50; i++) mc.update(0, 0, 1000);
+        boolean threw = false;
+        try {
+            mc.getRam().sample(-7L);
+            for (int i = 0; i < 50; i++) mc.update(0, 0, 1000);
+        } catch (Throwable t) {
+            threw = true;
+        }
+        MetricsCollector.Snapshot snap = mc.snapshot();
+        boolean ok = !threw
+                && snap.instances == 100
+                && Double.isFinite(snap.ramHoursGB)
+                && snap.ramHoursGB >= 0.0
+                && mc.getRam().getNegativeSampleCount() >= 1;
+        report("MetricsCollector survives negative RAM sample (inst="
+                + snap.instances + ", rh=" + snap.ramHoursGB + ")", ok);
     }
 
     private static void testRecoveryTimeRecoversWithinTolerance() {

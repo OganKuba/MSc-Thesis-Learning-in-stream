@@ -9,26 +9,35 @@ import thesis.selection.FeatureSelector;
 import java.util.Arrays;
 import java.util.Set;
 
-@Getter
 public class HoeffdingTreeWrapper implements ModelWrapper {
 
-    private final FeatureSelector selector;
+    public static final int DEFAULT_SEED = 1;
+
+    @Getter private final FeatureSelector selector;
     private final FeatureSpace space;
-    private final int gracePeriod;
-    private final double splitConfidence;
-    private final boolean resetOnSelectionChange;
+    @Getter private final int gracePeriod;
+    @Getter private final double splitConfidence;
+    @Getter private final boolean resetOnSelectionChange;
+    @Getter private final int seed;
 
     private HoeffdingTree tree;
     private InstancesHeader reducedHeader;
     private int[] cachedSelection;
 
     public HoeffdingTreeWrapper(FeatureSelector selector, InstancesHeader fullHeader) {
-        this(selector, fullHeader, 200, 0.01, false);
+        this(selector, fullHeader, 200, 0.01, false, DEFAULT_SEED);
     }
 
     public HoeffdingTreeWrapper(FeatureSelector selector, InstancesHeader fullHeader,
                                 int gracePeriod, double splitConfidence,
                                 boolean resetOnSelectionChange) {
+        this(selector, fullHeader, gracePeriod, splitConfidence, resetOnSelectionChange,
+                DEFAULT_SEED);
+    }
+
+    public HoeffdingTreeWrapper(FeatureSelector selector, InstancesHeader fullHeader,
+                                int gracePeriod, double splitConfidence,
+                                boolean resetOnSelectionChange, int seed) {
         if (selector == null) throw new IllegalArgumentException("selector must not be null");
         if (fullHeader == null) throw new IllegalArgumentException("fullHeader must not be null");
         if (!selector.isInitialized()) {
@@ -43,6 +52,7 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
         this.gracePeriod = gracePeriod;
         this.splitConfidence = splitConfidence;
         this.resetOnSelectionChange = resetOnSelectionChange;
+        this.seed = seed;
         rebuild();
     }
 
@@ -50,12 +60,13 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
         HoeffdingTree t = new HoeffdingTree();
         t.gracePeriodOption.setValue(gracePeriod);
         t.splitConfidenceOption.setValue(splitConfidence);
+        t.setRandomSeed(seed);
         t.prepareForUse();
         return t;
     }
 
     private void rebuild() {
-        cachedSelection = selector.getCurrentSelection();
+        cachedSelection = selector.getCurrentSelection().clone();
         reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_ht");
         tree = newTree();
         tree.setModelContext(reducedHeader);
@@ -64,7 +75,7 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
     private void syncSelection() {
         int[] curr = selector.getCurrentSelection();
         if (Arrays.equals(curr, cachedSelection)) return;
-        cachedSelection = curr;
+        cachedSelection = curr.clone();
         reducedHeader = FilteredHeaderBuilder.build(space, cachedSelection, "_ht");
         if (resetOnSelectionChange) {
             tree = newTree();
@@ -83,6 +94,7 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
     @Override
     public int predict(Instance full) {
         double[] votes = predictProba(full);
+        if (votes == null || votes.length == 0) return 0;
         int best = 0;
         for (int i = 1; i < votes.length; i++) if (votes[i] > votes[best]) best = i;
         return best;
@@ -101,19 +113,20 @@ public class HoeffdingTreeWrapper implements ModelWrapper {
                 full, space, cachedSelection, reducedHeader);
         reduced.setClassValue(classLabel);
         tree.trainOnInstance(reduced);
-        selector.update(space.extractFeatures(full), classLabel,
-                driftAlarm, driftingFeatures == null ? Set.of() : driftingFeatures);
     }
 
     @Override
-    public FeatureSelector getSelector()  { return selector; }
+    public int[] getCurrentSelection() { return cachedSelection.clone(); }
+
     @Override
-    public int[] getCurrentSelection()    { return cachedSelection.clone(); }
+    public void reset() { rebuild(); }
+
     @Override
-    public void reset()                   { rebuild(); }
+    public long modelByteSize() { return ModelSize.of(tree); }
 
     @Override
     public String name() {
-        return "HoeffdingTree(gp=" + gracePeriod + ", sc=" + splitConfidence + ") + " + selector.name();
+        return "HoeffdingTree(gp=" + gracePeriod + ", sc=" + splitConfidence
+                + ", seed=" + seed + ") + " + selector.name();
     }
 }
