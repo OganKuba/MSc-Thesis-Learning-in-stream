@@ -45,11 +45,11 @@ def save_fig(fig, name: str, subdir: str | None = None):
         print(f"  [fig] {written[0].relative_to(config.ROOT)}")
 
 
-def add_drift_lines(ax, drift_points, ymin=None, ymax=None, color="grey", alpha=0.4, ls="--"):
+def add_drift_lines(ax, drift_points, ymin=None, ymax=None, color="red", alpha=0.75, ls="--"):
     if drift_points is None or drift_points == "continuous":
         return
     for x in drift_points:
-        ax.axvline(x=x, color=color, alpha=alpha, linestyle=ls, linewidth=0.9)
+        ax.axvline(x=x, color=color, alpha=alpha, linestyle=ls, linewidth=1.8, zorder=4)
 
 
 def annotate_continuous(ax, drift_points):

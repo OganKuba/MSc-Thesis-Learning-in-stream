@@ -179,7 +179,14 @@ def figure_disabled(name: str, block: str | None = None) -> bool:
 
 CD_DIAGRAM_METRICS = ["kappa", "recovery_max_drop"]
 
-PALETTE = "colorblind"
+# Same 10 colours as seaborn's "colorblind" palette (still colorblind-safe), reordered so that
+# hue-similar neighbours in the original sequence (e.g. the three oranges/browns at positions
+# 1/3/5, the two pinks at 4/6) are spread apart instead of landing next to each other. This
+# matters because most figures use a *prefix* of this list (one colour per variant, in variant
+# order), so with many variants (8-10) two adjacent, similarly-hued lines used to be easy to
+# confuse, especially combined with the 4-way linestyle cycle (index i and i+4 share a linestyle).
+PALETTE = ["#0173b2", "#de8f05", "#cc78bc", "#029e73", "#d55e00",
+           "#fbafe4", "#949494", "#ca9161", "#ece133", "#56b4e9"]
 SNS_STYLE = "whitegrid"
 FONT_SCALE = 1.05
 FIG_DPI = 300

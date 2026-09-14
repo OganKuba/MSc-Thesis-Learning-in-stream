@@ -298,18 +298,21 @@ def plot_alarm_timeline(block: str, drift_alarms: pd.DataFrame, fname_prefix: st
         gt = drift_points_map.get(ds)
         lim = float(np.nanmax(np.abs(sub.delta_acc.values))) if len(sub) else 0.0
         lim = max(lim, 0.01) * 1.15
-        fig, axes = plt.subplots(len(variants), 1, figsize=(11, 1.5 * len(variants) + 1.2),
+        fig, axes = plt.subplots(len(variants), 1, figsize=(11, 1.05 * len(variants) + 1.0),
                                  sharex=True, sharey=True, squeeze=False)
         axes = axes[:, 0]
         for ax, v in zip(axes, variants):
             vd = sub[sub.variant == v].sort_values("instance_index")
             x = vd.instance_index.values
             d = vd.delta_acc.values
-            colors = np.where(d >= ALARM_USEFUL_DELTA, "C2",
-                              np.where(d <= -ALARM_USEFUL_DELTA, "C3", "0.6"))
-            ax.vlines(x, 0.0, d, colors=colors, linewidth=1.0, alpha=0.85)
-            ax.scatter(x, np.zeros_like(d), s=6, color="C0", zorder=3, edgecolor="none")
-            ax.axhline(0.0, color="black", linewidth=0.6, alpha=0.5)
+            # Literal colours (not C2/C3 cycle indices, which shift meaning whenever
+            # config.PALETTE is reordered): green = useful, orange = harmful, grey = neutral.
+            colors = np.where(d >= ALARM_USEFUL_DELTA, "#1a9850",
+                              np.where(d <= -ALARM_USEFUL_DELTA, "#d55e00", "0.6"))
+            ax.vlines(x, 0.0, d, colors=colors, linewidth=1.8, alpha=0.95)
+            ax.scatter(x, np.zeros_like(d), s=16, color="#0173b2", zorder=3,
+                       edgecolor="white", linewidth=0.4)
+            ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
             ax.set_ylim(-lim, lim)
             ax.set_ylabel(f"{v}\n" + r"$\Delta$acc", fontsize=8)
             plot_utils.add_drift_lines(ax, gt)
@@ -338,7 +341,7 @@ def plot_alarm_effectiveness(block: str, drift_alarms: pd.DataFrame, fname: str,
     sns.stripplot(data=df, x="variant", y="delta_acc", ax=ax, size=2.2,
                   alpha=0.35, color="C0", jitter=0.28)
     ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
-    ax.axhline(ALARM_USEFUL_DELTA, color="C2", linewidth=0.8, linestyle=":", alpha=0.8)
+    ax.axhline(ALARM_USEFUL_DELTA, color="#1a9850", linewidth=0.8, linestyle=":", alpha=0.8)
     lo, hi = ax.get_ylim()
     ax.set_ylim(lo, hi + 0.22 * (hi - lo))
     label_tf = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
